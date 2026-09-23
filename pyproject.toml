@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stegolab"
+version = "0.1.0"
+description = "Authenticated adaptive image steganography and reproducible resistance experiments"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "pillow", "cryptography"]
+
+[project.optional-dependencies]
+research = ["scikit-learn", "matplotlib", "torch"]
+test = ["pytest"]
+
+[project.scripts]
+stegolab = "stegolab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+stegolab = ["native/*.cpp", "native/*.dll", "native/*.so"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+

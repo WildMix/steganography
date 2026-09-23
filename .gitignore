@@ -1,0 +1,60 @@
+# Local Python environments
+.venv/
+venv/
+env/
+
+# Python bytecode, package builds, and test/tool caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+
+# Downloaded datasets and generated experiments, models, predictions, and logs
+# Keep RESULTS.md and requirements-research.lock.txt under version control.
+data/
+artifacts/
+*.log
+
+# Native binaries are rebuilt from the tracked C++ source
+src/stegolab/native/*.dll
+src/stegolab/native/*.so
+src/stegolab/native/*.dylib
+src/stegolab/native/*.o
+src/stegolab/native/*.obj
+
+# Private keys and local configuration; an example environment file is safe to track
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+/secrets/
+
+# Local message inputs and recovered plaintext from the usage examples
+/secret.txt
+/secret.bin
+/recovered.txt
+/recovered.bin
+
+# Local cover/stego images in the project root; test fixtures can still be tracked
+/*.png
+/*.pgm
+/*.jpg
+/*.jpeg
+
+# Editor settings and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
