@@ -173,6 +173,9 @@ def main():
         np.savez(folder / "test_predictions.npz", cover=c, stego=s,
                  cover_ids=np.array(manifest["parts"]["test"]), stego_ids=np.array(test_loader.dataset.accepted))
         atomic_json(folder / "final.json", result)
+        if args.variant == "balanced_auto":
+            from report_results import main as report_results
+            report_results()
         print(json.dumps(result, indent=2), flush=True)
         return
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -201,6 +204,9 @@ def main():
             history.append(record)
             print(json.dumps(record), flush=True)
             atomic_json(folder / "history.json", history)
+            if args.variant == "balanced_auto":
+                from report_results import main as report_results
+                report_results()
             continue
         c, s = infer(model, validation, device)
         y = np.r_[np.zeros(len(c), dtype=int), np.ones(len(s), dtype=int)]
@@ -231,6 +237,9 @@ def main():
             torch.save(model.state_dict(), folder / "best.pt")
             atomic_json(folder / "validation.json", calibration)
         atomic_json(folder / "history.json", history)
+        if args.variant == "balanced_auto":
+            from report_results import main as report_results
+            report_results()
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 """Render measured artifacts only; never trains, selects, or opens unseen test features."""
 import json
+import os
 from pathlib import Path
 import statistics
 import xml.etree.ElementTree as ET
@@ -193,6 +194,52 @@ def main():
               "multiple-message/key-reuse attacks, and distribution shift. Lossy image transformations "
               "are unsupported. Arbitrary input metadata is not preserved. No claim of universal KL/TV "
               "security or immunity to deep networks follows from this experiment.", ""]
+    auto_progress = ART / "auto_rate_progress.json"
+    if auto_progress.exists():
+        progress = read(auto_progress)
+        lines += ["## Keyed automatic-rate CNN experiment", "",
+                  "Supplemental comparison with the frozen 0.05-bpp balanced candidate. The same 32-byte "
+                  "per-image messages, source groups, and manifest splits are used. Auto chooses the exact "
+                  "minimum byte-fitting rate per image; on these 512-by-512 images it is 49/16384 bpp "
+                  "(approximately 0.002991). Images are serialized and authenticated after embedding. "
+                  "Each completed image is saved independently for resume.", "",
+                  "| Generation partition | Completed / target | Rejected |", "|---|---:|---:|"]
+        for part, item in progress["parts"].items():
+            lines.append(f"| {part} | {item['completed']} / {item['target']} | {item['failures']} |")
+        comparison_path = ART / "auto_rate_cnn_comparison.json"
+        if comparison_path.exists():
+            item = read(comparison_path)
+            lo, hi = item["paired_group_95_interval"]
+            robust_lo, robust_hi = item["paired_robust_95_interval"]
+            lines += ["", f"Common-pair held-out CNN AUC: 0.05 bpp {item['fixed_auc']:.4f}; "
+                      f"auto {item['auto_auc']:.4f}. Auto-minus-fixed difference: "
+                      f"{item['auto_minus_fixed_auc']:+.4f}, paired source-group 95% interval "
+                      f"[{lo:+.4f}, {hi:+.4f}] over {item['common_pairs']} accepted pairs. "
+                      f"Either-direction AUCs: {item['fixed_orientation_robust_auc']:.4f} vs "
+                      f"{item['auto_orientation_robust_auc']:.4f}; paired difference interval "
+                      f"[{robust_lo:+.4f}, {robust_hi:+.4f}]. "
+                      "Score orientations and checkpoints were frozen on validation for each model.", "",
+                      f"Mean changed pixels on common pairs: 0.05 bpp "
+                      f"{item['embedding']['fixed']['mean_changed_pixels']:.1f}; auto "
+                      f"{item['embedding']['auto']['mean_changed_pixels']:.1f}. "
+                      f"Mean PSNR: {item['embedding']['fixed']['mean_psnr_db']:.2f} vs "
+                      f"{item['embedding']['auto']['mean_psnr_db']:.2f} dB.", "",
+                      "The paired interval excludes zero for these two saved CNNs, but the absolute AUC "
+                      "difference is tiny and both models are near chance. This interval resamples test "
+                      "source groups only; it does not account for retraining seeds, architecture choice, "
+                      "hyperparameter search, or stronger detectors. Thus this is a measurable result for "
+                      "this experiment, not a general security guarantee or evidence that the minimum "
+                      "possible rate is always optimal.", ""]
+        else:
+            deep_auto = ART / "deep" / "balanced_auto" / "validation.json"
+            history = ART / "deep" / "balanced_auto" / "history.json"
+            if history.exists():
+                lines += ["", f"CNN training progress: {len(read(history))} epochs recorded; "
+                          "independent held-out comparison pending.", ""]
+            elif deep_auto.exists():
+                lines += ["", "CNN validation checkpoint saved; independent comparison pending.", ""]
+            else:
+                lines += ["", "Generation/training is incomplete. No automatic-rate security conclusion yet.", ""]
     public_progress = ART / "public_probe" / "progress.json"
     if public_progress.exists():
         progress = read(public_progress)
@@ -241,7 +288,10 @@ def main():
         lines[2:2] = ["Public no-key mode is **not resistant to a format-aware attacker**: the public "
                       "extractor recovered every tested stego message. Its image-only AUCs below do not "
                       "override that result.", ""]
-    (ROOT / "RESULTS.md").write_text("\n".join(lines), encoding="utf-8")
+    output = ROOT / "RESULTS.md"
+    temporary = output.with_name(f"RESULTS.md.{os.getpid()}.tmp")
+    temporary.write_text("\n".join(lines), encoding="utf-8")
+    temporary.replace(output)
     print(ROOT / "RESULTS.md")
 
 

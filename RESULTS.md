@@ -97,6 +97,8 @@ The neural model is a compact 30,929-parameter high-pass residual CNN trained lo
 |---|---|---:|---|---:|---:|---|
 | balanced_0p05 | CNN validation, epoch 15 | 0.5053 | [0.5022, 0.5101] | 0.5101 | 0.4903 | pass |
 | balanced_0p05 | CNN final | 0.5023 | [0.5012, 0.5041] | 0.5041 | 0.4999 | pass |
+| balanced_auto | CNN validation, epoch 6 | 0.5020 | [0.4995, 0.5053] | 0.5053 | 0.4955 | pass |
+| balanced_auto | CNN final | 0.5000 | [0.4999, 0.5001] | 0.5001 | 0.5000 | pass |
 | control | CNN validation, epoch 9 | 0.9965 | [0.9942, 0.9982] | 0.9982 | 0.0300 | control |
 | control | CNN final | 0.9964 | [0.9949, 0.9976] | 0.9976 | 0.0365 | control |
 
@@ -110,9 +112,12 @@ Every admitted sample is actually encoded, serialized to PNG, decoded, and authe
 |---|---:|---:|---:|---:|---:|---|
 | train | 0.01 | 1200 | 0 | 387.49 | 76.46 | 20.530 / 7.168 |
 | train | 0.05 | 1200 | 6 | 2346.19 | 68.64 | 178.934 / 18.303 |
+| train | auto | 1200 | 0 | 107.02 | 82.05 | 5.466 / 3.131 |
 | validation | 0.01 | 400 | 2 | 390.46 | 76.44 | 20.008 / 7.361 |
 | validation | 0.05 | 400 | 3 | 2356.81 | 68.62 | 204.809 / 20.596 |
+| validation | auto | 400 | 2 | 107.71 | 82.03 | 5.632 / 3.230 |
 | test | 0.05 | 1000 | 2 | 2343.10 | 68.64 | 178.104 / 19.237 |
+| test | auto | 1000 | 0 | 107.39 | 82.04 | 5.401 / 3.137 |
 
 At 512-by-512 pixels, stored message capacities before possible compression gains are 1,572 bytes at 0.05 gross bpp, 753 bytes at 0.025, 261 bytes at 0.01, and 97 bytes at 0.005. Salt, authentication, framing, and padding are included in the gross rate. Protected image regions can cause admission failures independently of nominal capacity.
 
@@ -125,6 +130,21 @@ The benchmark deliberately reuses a public experimental key and has reproducible
 The evaluated detectors receive a single image's pixels/features, not its original cover or shared key. A known original permits direct image comparison, and a known shared key permits authenticated extraction as a presence test. Public benchmark images and the public experiment key therefore do not constitute a secure live channel against a lookup-capable or key-informed adversary. These measurements concern the specified key-blind, unknown-cover classifiers; actual use requires private keys and an appropriate cover source, without implying those conditions alone guarantee security.
 
 Important unresolved threats include stronger or better-trained steganalyzers, more training images, unseen camera and processing sources, source-selection or metadata fingerprints, multiple-message/key-reuse attacks, and distribution shift. Lossy image transformations are unsupported. Arbitrary input metadata is not preserved. No claim of universal KL/TV security or immunity to deep networks follows from this experiment.
+
+## Keyed automatic-rate CNN experiment
+
+Supplemental comparison with the frozen 0.05-bpp balanced candidate. The same 32-byte per-image messages, source groups, and manifest splits are used. Auto chooses the exact minimum byte-fitting rate per image; on these 512-by-512 images it is 49/16384 bpp (approximately 0.002991). Images are serialized and authenticated after embedding. Each completed image is saved independently for resume.
+
+| Generation partition | Completed / target | Rejected |
+|---|---:|---:|
+| development | 1600 / 1600 | 2 |
+| test | 1000 / 1000 | 0 |
+
+Common-pair held-out CNN AUC: 0.05 bpp 0.5013; auto 0.5000. Auto-minus-fixed difference: -0.0013, paired source-group 95% interval [-0.0018, -0.0011] over 998 accepted pairs. Either-direction AUCs: 0.5013 vs 0.5000; paired difference interval [-0.0017, -0.0010]. Score orientations and checkpoints were frozen on validation for each model.
+
+Mean changed pixels on common pairs: 0.05 bpp 2343.1; auto 107.3. Mean PSNR: 68.64 vs 82.04 dB.
+
+The paired interval excludes zero for these two saved CNNs, but the absolute AUC difference is tiny and both models are near chance. This interval resamples test source groups only; it does not account for retraining seeds, architecture choice, hyperparameter search, or stronger detectors. Thus this is a measurable result for this experiment, not a general security guarantee or evidence that the minimum possible rate is always optimal.
 
 ## Public-layout exploratory probe
 

@@ -151,13 +151,14 @@ def image_job(identifier, rate):
         return record
     encoded = encode_png(stego)
     assert np.array_equal(decode_png(encoded), stego)
-    assert extract_pixels(decode_png(encoded), BENCH_KEY, Profile(rate)) == message
+    resolved = Profile(information["rate"])
+    assert extract_pixels(decode_png(encoded), BENCH_KEY, resolved) == message
     save_array(folder / f"baseline_{rate_tag}.npy", stego)
     save_array(folder / f"baseline_{rate_tag}_features.npy", features_with_container(stego, encoded))
     balanced, balance_info = balance_signs(cover, stego)
     encoded_balanced = encode_png(balanced)
     assert np.array_equal(decode_png(encoded_balanced), balanced)
-    assert extract_pixels(decode_png(encoded_balanced), BENCH_KEY, Profile(rate)) == message
+    assert extract_pixels(decode_png(encoded_balanced), BENCH_KEY, resolved) == message
     save_array(folder / f"balanced_{rate_tag}.npy", balanced)
     save_array(folder / f"balanced_{rate_tag}_features.npy", features_with_container(balanced, encoded_balanced))
     record = {"image": identifier, **information, **balance_info,
@@ -173,14 +174,40 @@ def generate(args):
     if args.limit:
         identifiers = identifiers[:args.limit]
     started, failures = time.monotonic(), 0
+    pending = identifiers
+    completed_before = 0
+    if args.rate == "auto":
+        pending = [identifier for identifier in identifiers
+                   if not (ARTIFACTS / "samples" / identifier / "auto.json").exists()]
+        completed_before = len(identifiers) - len(pending)
+        pending_ids = set(pending)
+        failures = sum("failure" in json.loads((ARTIFACTS / "samples" / identifier / "auto.json").read_text())
+                       for identifier in identifiers if identifier not in pending_ids)
     with ProcessPoolExecutor(max_workers=args.workers) as executor:
-        futures = {executor.submit(image_job, identifier, args.rate): identifier for identifier in identifiers}
+        futures = {executor.submit(image_job, identifier, args.rate): identifier for identifier in pending}
         for i, future in enumerate(as_completed(futures), 1):
             result = future.result()
             failures += int("failure" in result)
             if i % 20 == 0 or i == len(futures):
-                print(f"rate={args.rate} {args.part} {i}/{len(futures)} failures={failures} "
+                if args.rate == "auto":
+                    status_path = ARTIFACTS / "auto_rate_progress.json"
+                    status = json.loads(status_path.read_text()) if status_path.exists() else {"parts": {}}
+                    status["parts"][args.part] = {"completed": completed_before + i,
+                                                  "target": len(identifiers), "failures": failures}
+                    write_json(status_path, status)
+                if args.rate == "auto" and (i % 100 == 0 or i == len(futures)):
+                    from report_results import main as report_results
+                    report_results()
+                print(f"rate={args.rate} {args.part} {completed_before+i}/{len(identifiers)} failures={failures} "
                       f"elapsed={time.monotonic()-started:.1f}s", flush=True)
+    if args.rate == "auto" and not pending:
+        status_path = ARTIFACTS / "auto_rate_progress.json"
+        status = json.loads(status_path.read_text()) if status_path.exists() else {"parts": {}}
+        status["parts"][args.part] = {"completed": len(identifiers), "target": len(identifiers),
+                                      "failures": failures}
+        write_json(status_path, status)
+        from report_results import main as report_results
+        report_results()
 
 
 def load_part(manifest, part, variant):

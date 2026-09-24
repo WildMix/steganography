@@ -73,8 +73,37 @@ def message_keys(root, ctx, salt):
             for label in ("aead", "whiten", "body-perm", "body-code", "sign")}
 
 
+def select_payload(message: bytes):
+    """Select the shorter wire representation before image work begins."""
+    compressor = zlib.compressobj(level=6, wbits=-15)
+    compressed = compressor.compress(message) + compressor.flush()
+    return (1, compressed) if len(compressed) < len(message) else (0, message)
+
+
+def minimum_gross_rate(pixels: int, stored_bytes: int, keyed: bool) -> str:
+    """Exact lowest profile rate satisfying the byte-level frame capacity."""
+    lower = Fraction("0.0025")
+    required = Fraction(8 * (stored_bytes + (66 if keyed else 54)), pixels)
+    return "0.0025" if required <= lower else str(required)
+
+
+def prepare_payload(message: bytes, total: int, pixels: int, keyed: bool, chosen_rate: str | None = None):
+    """Return the shorter representation and pre-embedding capacity figures."""
+    flag, data = select_payload(message)
+    capacity = total - (66 if keyed else 54)
+    summary = {"message_bytes": len(message), "stored_bytes": len(data),
+               "capacity_bytes": capacity, "net_bpp": 8 * len(message) / pixels,
+               "stored_net_bpp": 8 * len(data) / pixels,
+               "gross_bpp": 8 * total / pixels,
+               "capacity_used_percent": 100 * len(data) / capacity if capacity else None,
+               "compressed": bool(flag),
+               "suggested_rate": minimum_gross_rate(pixels, len(data), keyed),
+               "chosen_rate": chosen_rate}
+    return flag, data, summary
+
+
 def embed_pixels(cover, message: bytes, key: bytes | None = None, profile=Profile(), *,
-                 strategy="baseline", random_bytes=secrets.token_bytes):
+                 strategy="baseline", random_bytes=secrets.token_bytes, progress=None):
     validate_pixels(cover)
     if not isinstance(message, bytes) or len(message) > MAX_MESSAGE:
         raise ValueError("Message must be bytes and at most 16 MiB")
@@ -82,19 +111,35 @@ def embed_pixels(cover, message: bytes, key: bytes | None = None, profile=Profil
         raise ValueError("Unknown sender strategy")
     started = time.perf_counter()
     h, w = cover.shape
+    if profile.rate == "auto":
+        _, selected_data = select_payload(message)
+        suggested = minimum_gross_rate(cover.size, len(selected_data), key is not None)
+        if Fraction(suggested) > Fraction("0.2"):
+            maximum_total = Profile("0.2").capacity(cover.size)
+            maximum_bytes = maximum_total - (66 if key is not None else 54)
+            if progress is not None:
+                _, _, summary = prepare_payload(message, maximum_total, cover.size,
+                                                key is not None, "auto (unavailable)")
+                progress(20, "Payload exceeds supported rate", summary)
+            raise coding.EmbeddingError(
+                f"Payload requires {len(selected_data)} bytes; maximum at 0.2 bpp is "
+                f"{maximum_bytes} bytes (minimum size-fitting rate: {suggested} bpp)")
+        profile = Profile(suggested)
     total = profile.capacity(cover.size)
     q, length = total - 32, total - 48
+    flag, data, summary = prepare_payload(message, total, cover.size, key is not None, profile.rate)
+    if progress is not None:
+        progress(20, "Payload capacity checked", summary)
+    if len(data) > summary["capacity_bytes"]:
+        raise coding.EmbeddingError(f"Payload requires {len(data)} bytes; capacity is {summary['capacity_bytes']}")
     ctx = context(w, h, total)
     root = root_key(key)
     head, base = split_positions(cover.size, derive(root, "split", ctx))
+    if progress is not None:
+        progress(25, "Computing adaptive costs", None)
     minus, plus = compute_costs(cover)
-    compressor = zlib.compressobj(level=6, wbits=-15)
-    compressed = compressor.compress(message) + compressor.flush()
-    flag, data = (1, compressed) if len(compressed) < len(message) else (0, message)
-    frame_size = length if key is not None else q
-    data_capacity = frame_size - 18 - (0 if key is not None else 4)
-    if len(data) > data_capacity:
-        raise coding.EmbeddingError(f"Payload requires {len(data)} bytes; capacity is {data_capacity}")
+    if progress is not None:
+        progress(45, "Adaptive costs ready", None)
     salt = random_bytes(32)
     if len(salt) != 32:
         raise ValueError("Randomness provider returned an invalid salt")
@@ -117,10 +162,12 @@ def embed_pixels(cover, message: bytes, key: bytes | None = None, profile=Profil
     output = original.copy()
     signs = Stream(keys["sign"])
     distortion = 0
-    for positions, target, code_key in (
-        (head, bits(salt), derive(root, "head-code", ctx)),
-        (body, bits(payload), keys["body-code"]),
+    for positions, target, code_key, start_percent, end_percent, stage in (
+        (head, bits(salt), derive(root, "head-code", ctx), 50, 60, "Embedding bootstrap"),
+        (body, bits(payload), keys["body-code"], 60, 78, "Embedding payload body"),
     ):
+        if progress is not None:
+            progress(start_percent, stage, None)
         x = original[positions] & 1
         costs = np.minimum(minus[positions], plus[positions])
         if np.count_nonzero(costs != coding.WET) < len(target):
@@ -136,13 +183,19 @@ def embed_pixels(cover, message: bytes, key: bytes | None = None, profile=Profil
         if not np.array_equal(coding.extract(output[positions] & 1, len(target), matrix), target):
             raise RuntimeError("Internal syndrome verification failed")
         distortion += stage_cost
+        if progress is not None:
+            progress(end_percent, stage + " complete", None)
     stego = output.reshape(cover.shape)
     balance_info = {}
     if strategy == "balanced":
+        if progress is not None:
+            progress(80, "Balancing modification signs", None)
         from .balance import balance_signs
         stego, balance_info = balance_signs(cover, stego)
         if not np.array_equal(stego & 1, output.reshape(cover.shape) & 1):
             raise RuntimeError("Balancing changed a payload parity")
+    if progress is not None:
+        progress(88, "Image embedding complete", None)
     changes = np.count_nonzero(stego != cover)
     return stego, {"rate": profile.rate, "strategy": strategy, "gross_bits": total * 8,
                    "stored_bytes": len(data), "message_bytes": len(message),
@@ -200,13 +253,22 @@ def extract_pixels(stego, key: bytes | None = None, profile=Profile()) -> bytes:
         raise ExtractionError(message) from None
 
 
-def encrypt_and_embed(cover_png: bytes, message: bytes, key: bytes | None = None, profile=Profile(), *, strategy="baseline") -> bytes:
+def encrypt_and_embed(cover_png: bytes, message: bytes, key: bytes | None = None, profile=Profile(), *,
+                      strategy="baseline", progress=None) -> bytes:
+    if progress is not None:
+        progress(5, "Decoding cover PNG", None)
     cover = decode_png(cover_png)
-    stego, _ = embed_pixels(cover, message, key, profile, strategy=strategy)
+    stego, information = embed_pixels(cover, message, key, profile, strategy=strategy, progress=progress)
+    if progress is not None:
+        progress(90, "Serializing stego PNG", None)
     result = encode_png(stego)
+    if progress is not None:
+        progress(95, "Verifying serialized image and extraction", None)
     decoded = decode_png(result)
-    if not np.array_equal(decoded, stego) or extract_pixels(decoded, key, profile) != message:
+    if not np.array_equal(decoded, stego) or extract_pixels(decoded, key, Profile(information["rate"])) != message:
         raise RuntimeError("Post-serialization self-check failed")
+    if progress is not None:
+        progress(100, "Embedding verified", None)
     return result
 
 
