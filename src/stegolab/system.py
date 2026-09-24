@@ -1,4 +1,4 @@
-"""Authenticated image embedding. Cost strategy is sender-only; rate is shared."""
+"""Image embedding with keyed encrypted and no-key plaintext payload modes."""
 from dataclasses import dataclass
 from fractions import Fraction
 from io import BytesIO
@@ -73,7 +73,7 @@ def message_keys(root, ctx, salt):
             for label in ("aead", "whiten", "body-perm", "body-code", "sign")}
 
 
-def embed_pixels(cover, message: bytes, key: bytes, profile=Profile(), *,
+def embed_pixels(cover, message: bytes, key: bytes | None = None, profile=Profile(), *,
                  strategy="baseline", random_bytes=secrets.token_bytes):
     validate_pixels(cover)
     if not isinstance(message, bytes) or len(message) > MAX_MESSAGE:
@@ -91,17 +91,27 @@ def embed_pixels(cover, message: bytes, key: bytes, profile=Profile(), *,
     compressor = zlib.compressobj(level=6, wbits=-15)
     compressed = compressor.compress(message) + compressor.flush()
     flag, data = (1, compressed) if len(compressed) < len(message) else (0, message)
-    if len(data) > length - 18:
-        raise coding.EmbeddingError(f"Payload requires {len(data)} bytes; capacity is {length - 18}")
+    frame_size = length if key is not None else q
+    data_capacity = frame_size - 18 - (0 if key is not None else 4)
+    if len(data) > data_capacity:
+        raise coding.EmbeddingError(f"Payload requires {len(data)} bytes; capacity is {data_capacity}")
     salt = random_bytes(32)
     if len(salt) != 32:
         raise ValueError("Randomness provider returned an invalid salt")
     keys = message_keys(root, ctx, salt)
-    frame = (struct.pack(">BBQQ", 1, flag, len(message), len(data)) + data
-             + random_bytes(length - 18 - len(data)))
-    aad = b"STEG-BP/1/aad\x00" + ctx + salt
-    encrypted = ChaCha20Poly1305(keys["aead"]).encrypt(bytes(12), frame, aad)
-    payload = bytes(a ^ b for a, b in zip(encrypted, Stream(keys["whiten"]).take(q), strict=True))
+    version = 1 if key is not None else 2
+    frame = struct.pack(">BBQQ", version, flag, len(message), len(data)) + data
+    if key is not None:
+        frame += random_bytes(length - len(frame))
+        aad = b"STEG-BP/1/aad\x00" + ctx + salt
+        payload_bytes = ChaCha20Poly1305(keys["aead"]).encrypt(bytes(12), frame, aad)
+    else:
+        frame += (zlib.crc32(frame) & 0xFFFFFFFF).to_bytes(4, "big")
+        frame += random_bytes(q - len(frame))
+        # Public whitening makes the syndrome target less message-dependent;
+        # anyone who knows the public layout can reverse it.
+        payload_bytes = frame
+    payload = bytes(a ^ b for a, b in zip(payload_bytes, Stream(keys["whiten"]).take(q), strict=True))
     body = body_positions(cover.size, derive(root, "split", ctx), keys["body-perm"])
     original = cover.ravel()
     output = original.copy()
@@ -141,7 +151,7 @@ def embed_pixels(cover, message: bytes, key: bytes, profile=Profile(), *,
                    "seconds": time.perf_counter() - started, **balance_info}
 
 
-def extract_pixels(stego, key: bytes, profile=Profile()) -> bytes:
+def extract_pixels(stego, key: bytes | None = None, profile=Profile()) -> bytes:
     try:
         validate_pixels(stego)
         h, w = stego.shape
@@ -156,14 +166,25 @@ def extract_pixels(stego, key: bytes, profile=Profile()) -> bytes:
         body = body_positions(stego.size, derive(root, "split", ctx), keys["body-perm"])
         matrix = columns(len(body), 8 * q, 10, keys["body-code"])
         payload = octets(coding.extract(flat[body] & 1, 8 * q, matrix))
-        encrypted = bytes(a ^ b for a, b in zip(payload, Stream(keys["whiten"]).take(q), strict=True))
-        aad = b"STEG-BP/1/aad\x00" + ctx + salt
-        frame = ChaCha20Poly1305(keys["aead"]).decrypt(bytes(12), encrypted, aad)
+        payload_bytes = bytes(a ^ b for a, b in zip(payload, Stream(keys["whiten"]).take(q), strict=True))
+        if key is not None:
+            aad = b"STEG-BP/1/aad\x00" + ctx + salt
+            frame = ChaCha20Poly1305(keys["aead"]).decrypt(bytes(12), payload_bytes, aad)
+        else:
+            frame = payload_bytes
         version, flag, original_length, stored_length = struct.unpack(">BBQQ", frame[:18])
-        if (len(frame) != length or version != 1 or flag not in (0, 1)
-                or original_length > MAX_MESSAGE or stored_length > length - 18):
+        expected_version = 1 if key is not None else 2
+        frame_length = length if key is not None else q
+        data_capacity = frame_length - 18 - (0 if key is not None else 4)
+        if (len(frame) != frame_length or version != expected_version or flag not in (0, 1)
+                or original_length > MAX_MESSAGE or stored_length > data_capacity):
             raise ValueError("Invalid frame")
         data = frame[18:18 + stored_length]
+        if key is None:
+            checksum_end = 18 + stored_length
+            expected_crc = int.from_bytes(frame[checksum_end:checksum_end + 4], "big")
+            if expected_crc != (zlib.crc32(frame[:checksum_end]) & 0xFFFFFFFF):
+                raise ValueError("Invalid plaintext checksum")
         if flag == 0:
             if len(data) != original_length:
                 raise ValueError("Invalid raw length")
@@ -175,10 +196,11 @@ def extract_pixels(stego, key: bytes, profile=Profile()) -> bytes:
             raise ValueError("Invalid compressed frame")
         return message
     except (ValueError, InvalidTag, zlib.error, struct.error, OverflowError):
-        raise ExtractionError("No valid authenticated payload") from None
+        message = "No valid authenticated payload" if key is not None else "No valid plaintext payload"
+        raise ExtractionError(message) from None
 
 
-def encrypt_and_embed(cover_png: bytes, message: bytes, key: bytes, profile=Profile(), *, strategy="baseline") -> bytes:
+def encrypt_and_embed(cover_png: bytes, message: bytes, key: bytes | None = None, profile=Profile(), *, strategy="baseline") -> bytes:
     cover = decode_png(cover_png)
     stego, _ = embed_pixels(cover, message, key, profile, strategy=strategy)
     result = encode_png(stego)
@@ -188,8 +210,9 @@ def encrypt_and_embed(cover_png: bytes, message: bytes, key: bytes, profile=Prof
     return result
 
 
-def extract_and_decrypt(stego_png: bytes, key: bytes, profile=Profile()) -> bytes:
+def extract_and_decrypt(stego_png: bytes, key: bytes | None = None, profile=Profile()) -> bytes:
     try:
         return extract_pixels(decode_png(stego_png), key, profile)
     except (ValueError, OSError):
-        raise ExtractionError("No valid authenticated payload") from None
+        message = "No valid authenticated payload" if key is not None else "No valid plaintext payload"
+        raise ExtractionError(message) from None

@@ -1,5 +1,7 @@
 # Measured steganography results
 
+Public no-key mode is **not resistant to a format-aware attacker**: the public extractor recovered every tested stego message. Its image-only AUCs below do not override that result.
+
 The frozen **balanced_0p05** candidate **met the provisional target against the evaluated detectors** on the final holdout. Largest classical upper bound: 0.5204; neural upper bound: 0.5041. Held-out positive-control sensitivity gate: passed.
 
 This report is generated from saved experiment artifacts. A pass is evidence only against the evaluated detector, its fitted model, this image source, and the tested payload profile. It is not a proof of statistical indistinguishability.
@@ -123,6 +125,37 @@ The benchmark deliberately reuses a public experimental key and has reproducible
 The evaluated detectors receive a single image's pixels/features, not its original cover or shared key. A known original permits direct image comparison, and a known shared key permits authenticated extraction as a presence test. Public benchmark images and the public experiment key therefore do not constitute a secure live channel against a lookup-capable or key-informed adversary. These measurements concern the specified key-blind, unknown-cover classifiers; actual use requires private keys and an appropriate cover source, without implying those conditions alone guarantee security.
 
 Important unresolved threats include stronger or better-trained steganalyzers, more training images, unseen camera and processing sources, source-selection or metadata fingerprints, multiple-message/key-reuse attacks, and distribution shift. Lossy image transformations are unsupported. Arbitrary input metadata is not preserved. No claim of universal KL/TV security or immunity to deep networks follows from this experiment.
+
+## Public-layout exploratory probe
+
+This is a separate, smaller, resumable experiment at 0.05 gross bpp with the balanced encoder and 32-byte messages. It uses the frozen source-group splits, but only their first 120 train, 60 validation, and 120 test images; it is not the original full-scale confirmation and does not establish performance across message structures. Each completed image has an independently saved round-trip and feature record.
+
+| Partition | Completed / target | Rejected |
+|---|---:|---:|
+| train | 120 / 120 | 1 |
+| validation | 60 / 60 | 0 |
+| test | 120 / 120 | 0 |
+
+Held-out classical results (models fitted only on this public-mode probe):
+
+| Variant | Detector | AUC | Group-bootstrap 95% interval | Either-direction upper bound | Equal-prior error | Target |
+|---|---|---:|---|---:|---:|---|
+| public_balanced_0p05_probe | adjacent_bin_chisquare | 0.5031 | [0.5011, 0.5075] | 0.5075 | 0.5000 | pass |
+| public_balanced_0p05_probe | rs_like_regularity | 0.4999 | [0.4970, 0.5023] | 0.5030 | 0.5042 | pass |
+| public_balanced_0p05_probe | residual_subspace_ensemble | 0.5144 | [0.5031, 0.5290] | 0.5290 | 0.4958 | pass |
+| public_balanced_0p05_probe | residual_extra_trees | 0.5139 | [0.4893, 0.5407] | 0.5407 | 0.4792 | pass |
+
+Frozen keyed-trained CNN transfer to public images (not retrained for public mode):
+
+| Variant | Detector | AUC | Group-bootstrap 95% interval | Either-direction upper bound | Equal-prior error | Target |
+|---|---|---:|---|---:|---:|---|
+| public_balanced_0p05_probe | CNN transfer | 0.5035 | [0.5024, 0.5083] | 0.5083 | 0.5000 | pass |
+
+
+Public-format extraction attack: 120/120 test stegos recovered; 0/40 ordinary covers falsely accepted. This is a format-aware test, not an image-only CNN. Therefore public mode fails against an attacker who knows this public algorithm, regardless of the image-only AUCs above.
+
+
+The public salt and layout seed can be recovered or computed by any observer. A salt-aware adversary can run the public extractor directly; the AUC table only measures image-only detectors without that protocol knowledge. Random salt does not provide secrecy or cryptographic authentication.
 
 ## Correctness verification
 

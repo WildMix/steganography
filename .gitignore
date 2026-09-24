@@ -51,6 +51,8 @@ src/stegolab/native/*.obj
 /*.pgm
 /*.jpg
 /*.jpeg
+/*.jfif
+/*.txt
 
 # Editor settings and operating-system files
 .idea/

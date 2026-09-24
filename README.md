@@ -21,25 +21,40 @@ On Linux, substitute `.venv/bin/python`. The build script selects a `.so` instea
 
 Use a single-frame, 8-bit grayscale PNG, without alpha or a palette. It must contain between 262,144 and 16,777,216 pixels and have sides between 256 and 8192 pixels. The implementation rejects implicit conversions. Keep a private original and transmit the stego losslessly; resizing, JPEG recompression, and color conversion can destroy the payload.
 
+The CLI supports two distinct payload modes. Supplying `--key` requires the same private 32-byte key at both ends and selects the existing authenticated-encryption mode. Omitting `--key` at both ends selects the unencrypted public plaintext mode. The mode is selected out of band by the presence of the option; using different modes for embed and extract cannot work.
+
 ```powershell
+# Confidential, authenticated mode: keep this key private and give it to both endpoints.
 .\.venv\Scripts\stegolab.exe keygen private.key
-.\.venv\Scripts\stegolab.exe embed cover.png --message secret.bin --key private.key --output stego.png --rate 0.05 --strategy balanced
-.\.venv\Scripts\stegolab.exe extract stego.png --key private.key --output recovered.bin --rate 0.05
+.\.venv\Scripts\stegolab.exe embed cover.png --message secret.txt --key private.key --output encrypted_stego.png --rate 0.05 --strategy balanced
+.\.venv\Scripts\stegolab.exe extract encrypted_stego.png --key private.key --output encrypted_recovered.txt --rate 0.05
+
+# Unencrypted plaintext mode: deliberately omit --key from both commands.
+.\.venv\Scripts\stegolab.exe embed cover.png --message secret.txt --output plain_stego.png --rate 0.05 --strategy balanced
+.\.venv\Scripts\stegolab.exe extract plain_stego.png --output plain_recovered.txt --rate 0.05
 ```
 
-The commands explicitly select the validation-chosen research candidate: balanced embedding at 0.05 gross bits per pixel, including salt, authenticated framing, padding, and tag. Check `RESULTS.md` for the status of its independent confirmation and the limitations. API and CLI defaults retain the blueprint's baseline strategy at the same rate, so specify `--strategy balanced` to use the extension. At 512 by 512 pixels, up to 1,572 stored message bytes fit before possible compression gains. Protected regions can still make a cover unusable. The CLI refuses to overwrite any existing output.
+The no-key mode provides **no confidentiality**: anyone who knows the public format can recover the message without a secret. Its public pseudorandom layout, salt, padding, and reversible whitening are not encryption. A CRC detects ordinary accidental payload corruption; it is not a cryptographic authentication tag and cannot prove who created the message or prevent deliberate changes. For confidential messages, always supply a private key to both commands. The `--message` argument names a file whose raw bytes are embedded; encode text as UTF-8 yourself if you need UTF-8 bytes, and extraction writes those bytes back unchanged.
+
+It also cannot promise stealth against someone who knows this public format: that observer can run the no-key extractor as a presence test. In the exploratory public-mode probe, it recovered all 120 tested stego messages while rejecting all 40 ordinary covers tested. Image-only detector AUCs near 0.5 do not negate this direct attack. The random salt is encoded in publicly decodable image positions, so increasing salt entropy cannot fix it. See `RESULTS.md` for the measurements and their limits.
+
+The encrypted example selects the validation-chosen research candidate: balanced embedding at 0.05 gross bits per pixel, including salt, authenticated framing, padding, and tag. Check `RESULTS.md` for the independent confirmation and limitations. API and CLI defaults retain the blueprint's baseline strategy, so specify `--strategy balanced` to use the experimental extension. At 512 by 512 pixels, the maximum stored message is 1,572 bytes with encryption, or 1,584 bytes in no-key mode, before possible compression gains. Protected regions can still make a cover unusable. The CLI refuses to overwrite any existing output.
 
 For the experimental sign-balancing encoder, pass `--strategy balanced` when embedding. Extraction is unchanged because all payload parities remain unchanged. For a lower-rate profile, pass the same `--rate`, such as `0.01`, to both embedding and extraction. Rate selection is out of band and is not inferred from an unauthenticated header. At 512 by 512, 0.01 bpp allows 261 stored bytes; 0.005 bpp allows 97.
 
 ```python
 from stegolab.system import Profile, encrypt_and_embed, extract_and_decrypt
 
-# key must be 32 random bytes held privately by both endpoints.
+# Encrypted mode: key must be 32 random bytes held privately by both endpoints.
 stego_png = encrypt_and_embed(cover_png, secret_bytes, key, Profile("0.05"), strategy="balanced")
 assert extract_and_decrypt(stego_png, key, Profile("0.05")) == secret_bytes
+
+# No-key mode: omit the key explicitly at both endpoints. The message is not secret.
+public_stego_png = encrypt_and_embed(cover_png, secret_bytes, None, Profile("0.05"), strategy="balanced")
+assert extract_and_decrypt(public_stego_png, None, Profile("0.05")) == secret_bytes
 ```
 
-The production path uses operating-system randomness. Deterministic randomness and the explicitly public key in the experiment runner are solely for reproducible tests and must never protect real messages. The bounded in-process caches retain key-dependent mappings; this implementation does not claim secure memory erasure or resistance to local memory inspection.
+Both paths use operating-system randomness for the per-image salt and frame padding. In encrypted mode, the production path combines it with the private key. The no-key mode deliberately substitutes a fixed, publicly specified layout seed; it provides interoperability, not secrecy. Deterministic randomness and the explicitly public benchmark key must never protect real messages. The bounded in-process caches retain key-dependent mappings; this implementation does not claim secure memory erasure or resistance to local memory inspection.
 
 The measured detectors are key-blind and are not given corresponding original covers. Knowing the original image permits direct comparison; knowing the shared key permits authenticated extraction as a presence test. The public benchmark dataset/key is therefore not a secure live channel against a lookup-capable or key-informed observer.
 
@@ -59,7 +74,8 @@ The implemented choices are:
 | Component | Purpose | Status in this project |
 |---|---|---|
 | Raw DEFLATE compression | Fit compressible messages into the available space | Existing compression method |
-| ChaCha20-Poly1305 authenticated encryption | Message confidentiality and integrity | Existing cryptographic primitive, used through a library |
+| ChaCha20-Poly1305 authenticated encryption | Message confidentiality and integrity | Existing cryptographic primitive used in keyed mode |
+| Versioned plaintext frame and CRC-32 | Detect accidental corruption in an unencrypted payload | Added for no-key mode; CRC is not cryptographic authentication |
 | HMAC-SHA256 key derivation, streams, and keyed shuffles | Reconstruct synchronized positions and codes without transmitting them separately | Blueprint's specified composition of existing techniques |
 | Relative-wavelet modification costs | Prefer changes with a small modeled effect on local image residuals | Adaptive distortion approach from the blueprint |
 | Binary syndrome-trellis coding, or STC | Find a minimum-cost parity pattern carrying the required bits | Existing coding method, implemented here in C++ |
@@ -82,16 +98,27 @@ Single-frame, 8-bit grayscale PNG was the profile selected in the blueprint, not
 
 There is deliberately no automatic conversion. Turning a color photograph into grayscale visibly changes the cover and changes its source characteristics. Such conversion can make a file technically acceptable, but is not equivalent to supporting the original color image and does not inherit the benchmark's resistance results.
 
+## Keyed and no-key modes
+
+Mode is selected by whether `--key` is supplied, and the receiver must make the same choice. The library exposes the same choice as `key` versus `None`:
+
+| Mode | Sender and receiver | Body protection | Intended use |
+|---|---|---|---|
+| Keyed (existing behavior) | Both supply the same private 32-byte key | ChaCha20-Poly1305 encrypts the frame and authenticates it | Confidential payloads with cryptographic integrity |
+| No-key plaintext (new) | Both omit `--key` or pass `None` | No encryption or secret key; public layout and reversible whitening carry a CRC-checked frame | Plaintext messages that need no confidentiality |
+
+The no-key mode does not provide the old security properties for free: a public layout seed cannot provide secrecy or cryptographic authentication. The CRC detects many accidental errors, but anyone can alter the message and recompute it. Existing encrypted data must be extracted with its key; plaintext data must be extracted without a key. Modes are not automatically detected or interchangeable.
+
 ## Sender: the embedding process
 
-The following steps explain the data dependencies. The implementation computes the cover costs early, before constructing the encrypted frame; neither computation depends on the other's intermediate values.
+The following steps explain the data dependencies. The implementation computes cover costs early, before constructing the selected frame; neither computation depends on the other's intermediate values.
 
 ```text
-message bytes -> optional compression -> padded frame -> authenticated encryption
+message bytes -> compression -> versioned mode-specific frame
                                                             |
-shared key + fresh salt -> derived keys -> body whitening ---+
+key or public layout + salt -> derived keys -> body whitening ---+
                                                             v
-cover pixels -> modification costs -> two STC embeddings: salt and encrypted body
+cover pixels -> modification costs -> two STC embeddings: salt and message body
                                                             |
                                                    legal unit changes
                                                             |
@@ -102,7 +129,7 @@ cover pixels -> modification costs -> two STC embeddings: salt and encrypted bod
 
 ### 1. Validate inputs and calculate the real message capacity
 
-The sender needs a supported image, message bytes, and the same private 32-byte random key the receiver will use. `keygen` creates that key using operating-system randomness. The key file contains binary bytes, not a password, a hexadecimal string, or text. Password-based key derivation and key exchange are not implemented.
+The sender needs a supported image and message bytes. In keyed mode it also needs the same private 32-byte random key the receiver will use. `keygen` creates that key using operating-system randomness. The key file contains binary bytes, not a password, a hexadecimal string, or text. Password-based key derivation and key exchange are not implemented. No-key mode uses a public layout derivation, not a secret key.
 
 Let `N = width * height` be the number of pixels and `r` the requested gross rate in bits per pixel, or **bpp**. One byte contains eight bits. The total embedded byte budget is
 
@@ -114,12 +141,13 @@ The budget is divided as follows:
 
 | Part | Bytes | What it contains |
 |---|---:|---|
-| Bootstrap salt | 32 | Fresh randomness needed to derive this message's keys |
-| Encrypted frame | `B - 48` | 18-byte internal header, stored message, and padding |
-| Authentication tag | 16 | Used to verify the encrypted frame and associated data |
-| Total | `B` | Salt plus the encrypted-and-tagged body |
+| Bootstrap salt | 32 | Recovered first; initializes this message's body layout |
+| Body target | `B - 32` | Keyed ciphertext and AEAD tag, or whitened plaintext frame, CRC, and padding |
+| Keyed frame before encryption | `B - 48` | 18-byte header, stored message, and padding; receives a 16-byte AEAD tag |
+| AEAD tag (keyed mode only) | 16 | Authenticates the encrypted frame and associated data |
+| Total | `B` | Salt plus the fixed-length body target in either mode |
 
-Consequently, the maximum **stored** message length is `B - 66` bytes. This differs from the original message length when compression helps. The original message is additionally capped at 16 MiB before compression.
+In keyed mode, the maximum **stored** message is `B - 66` bytes: subtract the 32-byte salt, 16-byte authentication tag, and 18-byte inner header. In no-key mode, it is `B - 54` bytes: subtract the salt, header, and four-byte CRC. Compression may let a longer original message fit. The original message is additionally capped at 16 MiB before compression.
 
 For a 512-by-512 cover at 0.05 bpp:
 
@@ -136,7 +164,7 @@ total embedded information    = 13,104 bits
 
 These are information bits, not the number of pixels changed. Coding can satisfy many parity equations with substantially fewer modifications. Conversely, nominal byte capacity does not guarantee that a particular image has enough usable pixels.
 
-### 2. Compress, frame, encrypt, and whiten the payload
+### 2. Compress, frame, and prepare the selected payload mode
 
 The encoder tries raw DEFLATE compression at level 6, without a zlib wrapper. It uses the compressed bytes only if they are strictly shorter than the original bytes; otherwise it stores the original bytes. Already compressed or random data will usually not benefit.
 
@@ -144,14 +172,14 @@ It constructs the plaintext frame in this exact order:
 
 | Field | Size | Meaning |
 |---|---:|---|
-| Version | 1 byte | Currently `1` |
+| Version | 1 byte | `1` for keyed encryption; `2` for no-key plaintext |
 | Compression flag | 1 byte | `0` for original bytes, `1` for raw DEFLATE |
 | Original length | 8 bytes | Length before compression |
 | Stored length | 8 bytes | Length after the compression decision |
 | Stored data | Variable | The message representation |
-| Random padding | Remaining space | Makes the frame exactly `B - 48` bytes |
+| Random padding | Remaining space | Fills the keyed frame to `B - 48` bytes before encryption; in plaintext mode it fills the `B - 32` byte body after header, data, and CRC |
 
-Both lengths are unsigned integers in **big-endian** order: the most significant byte comes first. The header itself is encrypted; it is not a visible PNG marker. Padding is fresh operating-system randomness and is also encrypted and authenticated.
+Both lengths are unsigned integers in **big-endian** order: the most significant byte comes first. Neither header is a visible PNG marker. In keyed mode, the header and random padding are encrypted and authenticated. In no-key mode, the header is public once extracted; the CRC covers the header and stored data, and random padding fills the rest of the fixed-length frame.
 
 The rate fixes the frame size. A ten-byte message and a thousand-byte message use the same embedded bit budget when they fit the same image/profile. Compression helps a message fit, but does not lower the embedding budget in this fixed-rate design. Use an explicitly lower shared rate to reduce that budget.
 
@@ -163,7 +191,11 @@ The exact schedule in `primitives.py` and `system.py` can be summarized as follo
 
 ```text
 ctx  = "STEG-BP/1" || BE32(width) || BE32(height) || BE64(B) || byte(10)
-root = HMAC(SHA256("STEG-BP/1/root"), shared_key)
+if key is supplied:
+    layout_key = shared_key
+else:
+    layout_key = SHA256("STEG-BP/1/public-plaintext-layout")
+root = HMAC(SHA256("STEG-BP/1/root"), layout_key)
 D(k, label) = HMAC(k, label || 0x00 || ctx || 0x01)
 
 split_key     = D(root, "split")
@@ -178,17 +210,17 @@ body_code_key = D(message_root, "body-code")
 sign_key      = D(message_root, "sign")
 ```
 
-The context binds these operations to the profile, dimensions, byte budget, and trellis height `10`. Distinct labels separate purposes. The split and bootstrap code depend only on the shared key and context; they cannot depend on a salt that the receiver has not recovered yet.
+The context binds these operations to the profile, dimensions, byte budget, and trellis height `10`. Distinct labels separate purposes. In keyed mode the split and bootstrap code depend on the shared key and context; in no-key mode anyone can calculate the same root from the published seed. Neither mode can use the salt for bootstrap positions because the receiver must recover it first.
 
-ChaCha20-Poly1305 then encrypts the full frame and produces a 16-byte authentication tag. **Authenticated encryption with associated data**, or **AEAD**, both encrypts a plaintext and authenticates additional bytes without encrypting those additional bytes. Here the associated data is
+In keyed mode only, ChaCha20-Poly1305 encrypts the full frame and produces a 16-byte authentication tag. **Authenticated encryption with associated data**, or **AEAD**, both encrypts a plaintext and authenticates additional bytes without encrypting those additional bytes. The associated data in that mode is
 
 ```text
 "STEG-BP/1/aad" || 0x00 || ctx || salt
 ```
 
-The implementation uses a twelve-byte all-zero **nonce**, an encryption input that must not repeat with the same AEAD key. This construction relies on a fresh 32-byte salt deriving a fresh AEAD key for each message. It is not permission to reuse a zero nonce under a fixed encryption key. Repeating a salt with the same master key and context repeats the derived key and breaks that discipline. The production path uses `secrets.token_bytes`; deterministic experiment randomness must never be substituted for real secrets.
+The keyed implementation uses a twelve-byte all-zero **nonce**, an encryption input that must not repeat with the same AEAD key. This construction relies on a fresh 32-byte salt deriving a fresh AEAD key for each message. It is not permission to reuse a zero nonce under a fixed encryption key. Repeating a salt with the same master key and context repeats the derived key and breaks that discipline. The production path uses `secrets.token_bytes`; deterministic experiment randomness must never be substituted for real secrets. No-key mode does not call AEAD.
 
-Finally, the ciphertext and tag are XORed with a separate pseudorandom byte stream. **XOR** combines bits with the rule `0 XOR 0 = 1 XOR 1 = 0` and `0 XOR 1 = 1 XOR 0 = 1`; applying the same stream twice restores the input. This reversible step is called **whitening**. It is retained from the blueprint, not presented as additional proven security over authenticated encryption or as a way to make pixel modifications invisible.
+The keyed ciphertext and tag are XORed with a separate pseudorandom byte stream. In no-key mode, the unencrypted frame takes this whitening step directly. **XOR** combines bits with the rule `0 XOR 0 = 1 XOR 1 = 0` and `0 XOR 1 = 1 XOR 0 = 1`; applying the same stream twice restores the input. This reversible step is called **whitening**. In no-key mode the stream is public and reversible by anyone: whitening provides no secrecy or cryptographic authentication. In keyed mode it is retained from the blueprint, not presented as additional proven security over AEAD or as a way to make pixel modifications invisible.
 
 The reusable stream mechanism concatenates 32-byte blocks:
 
@@ -411,32 +443,32 @@ Matching these counts leaves many properties unconstrained, including relationsh
 
 The result is saved as a grayscale PNG using compression level 6 with optimization disabled. PNG compression changes file bytes but preserves pixel samples. No secret-bearing metadata or plaintext message marker is added. Arbitrary ancillary metadata from the original is not preserved, and the serializer does not promise to reproduce every camera or editor's file fingerprint.
 
-Before returning the PNG, the public embedding API decodes its own output, checks exact pixel equality with the intended stego, and performs full extraction and authenticated decryption. The recovered message must exactly match the input bytes. The CLI writes the output only after this succeeds and uses exclusive creation to refuse overwriting an existing file.
+Before returning the PNG, the public embedding API decodes its own output, checks exact pixel equality with the intended stego, and performs full extraction using the selected mode. The recovered message must exactly match the input bytes. The keyed path checks the AEAD tag; the no-key path checks the frame CRC. The CLI writes the output only after this succeeds and uses exclusive creation to refuse overwriting an existing file.
 
 This proves a particular output round-trips correctly under the implemented profile; it does not test its statistical invisibility. The benchmark sends cover controls through the same serializer so that an obvious difference in serializer choice does not stand in for detecting pixel changes. Real deployment still needs to consider metadata and file-source fingerprints.
 
 ## Receiver: extraction without the original image
 
-The receiver supplies only the stego PNG, the shared key, and the same rate/profile. It does not need the original cover, cost map, message length, sender's modification signs, or `--strategy`.
+The receiver supplies the stego PNG, the same rate/profile, and either the same shared key (keyed mode) or no key (no-key mode). It does not need the original cover, cost map, message length, sender's modification signs, or `--strategy`.
 
 1. Strictly decode the PNG and calculate `N`, `B`, and `ctx` from its dimensions and the supplied rate.
 2. Derive the root, split key, and bootstrap code key. Reconstruct the bootstrap pool and its matrix.
 3. Read the even/odd bits at bootstrap positions and evaluate its parity equations. Pack the resulting 256 bits into the 32-byte salt.
 4. Derive the salt-dependent keys, shuffle the body pool, and reconstruct the body matrix.
 5. Evaluate the body's parity equations to recover `8*(B-32)` bits. Pack them into the whitened ciphertext-and-tag bytes.
-6. XOR with the same whitening stream, then perform ChaCha20-Poly1305 authenticated decryption with the same nonce and associated data.
-7. Only after authentication succeeds, parse the encrypted header. Check the version, compression flag, declared lengths, and bounds. Discard padding using the authenticated stored length.
-8. Return the raw bytes, or decompress raw DEFLATE with a bound based on the authenticated original length. Require the exact expected length and a complete stream without trailing compressed data.
+6. XOR with the same whitening stream. In keyed mode, authenticate and decrypt with ChaCha20-Poly1305, the same nonce, and associated data. In no-key mode, these bytes are the unencrypted frame.
+7. In keyed mode, check the authenticated version, compression flag, lengths, and bounds. In no-key mode, check version `2`, the bounds, and CRC-32 over the header and stored data. The CRC detects accidental damage; it cannot authenticate a sender or stop deliberate forgery. Discard padding using the stored length.
+8. Return the raw bytes, or decompress raw DEFLATE with a bound based on the original length. Require the exact expected length and a complete stream without trailing compressed data.
 
 The crucial identity is `H * parity(stego) = target`. Extraction evaluates that identity directly; it does not search for changed pixels. Recomputing costs from a modified image is unnecessary and could give different results, which is why costs never determine the receiver's position ordering.
 
-An ordinary image, wrong key, wrong effective rate/profile, or sufficiently damaged payload normally ends in the generic error `No valid authenticated payload`. There is no reliable unauthenticated "message present" marker. Someone who has the shared key can nevertheless use successful authenticated extraction as a presence test.
+In keyed mode, an ordinary image, wrong key, wrong rate/profile, or sufficiently damaged payload normally ends in `No valid authenticated payload`. In no-key mode, the corresponding error is `No valid plaintext payload`. There is no reliable unauthenticated "message present" marker. Anyone who knows the no-key format can try extracting the payload; anyone with the shared key can use successful keyed extraction as a presence test.
 
-Authentication covers the recovered frame and associated context, not every image pixel or every PNG metadata byte. Some image edits can preserve all extracted parity equations and leave the message valid. Conversely, a visually harmless recompression, resize, rotation, or color conversion may destroy those equations. This is not robust watermarking or complete-image authentication.
+In keyed mode, authentication covers the recovered frame and associated context, not every image pixel or every PNG metadata byte. In no-key mode, the CRC covers only the frame header and stored data. Some image edits can preserve all extracted parity equations and leave the message valid. Conversely, a visually harmless recompression, resize, rotation, or color conversion may destroy those equations. This is not robust watermarking or complete-image authentication.
 
 ## What the experiments demonstrated
 
-The full saved evidence is in [RESULTS.md](RESULTS.md). The measured profile used native 512-by-512 grayscale images, 1,200 training covers, 400 validation covers, and 1,000 held-out test covers. Related images identified by exact and approximate hashes were grouped before splitting. The selected `balanced` strategy at 0.05 gross bpp successfully embedded in 998 test covers and rejected two; every admitted baseline and balanced sample was serialized, extracted, and authenticated.
+The full saved evidence is in [RESULTS.md](RESULTS.md). It measures the **keyed encrypted mode** on native 512-by-512 grayscale images, using 1,200 training covers, 400 validation covers, and 1,000 held-out test covers. Related images identified by exact and approximate hashes were grouped before splitting. The selected `balanced` strategy at 0.05 gross bpp successfully embedded in 998 test covers and rejected two; every admitted baseline and balanced sample was serialized, extracted, and authenticated. The no-key plaintext mode was added separately and has not been benchmarked; those resistance measurements do not apply to it.
 
 A **steganalyzer** is a detector that tries to distinguish ordinary covers from stegos. The experiments used two standalone image statistics, two trained residual-feature classifiers, and a compact residual convolutional neural network, or **CNN**. Residual features include counts of neighboring residual combinations, not just the individual-value histograms optimized by balancing. This gives the test detectors information outside the balancing objective, but does not make them exhaustive adversaries.
 
@@ -473,10 +505,11 @@ Nothing here establishes universal indistinguishability, security against a know
 | `Only single-frame grayscale PNG is supported` | The decoded file is not mode `L`, or has multiple frames. An RGB/RGBA or palette PNG is not supported even if it looks gray. |
 | `PNG dimensions exceed limits` | One side or the total pixel count is outside the profile bounds. |
 | `Shared key must contain exactly 32 random bytes` | The input is not the expected binary key representation. Correct length alone does not make a predictable key secure. |
-| `Payload requires ...; capacity is ...` | The shorter of the original/compressed message exceeds `B - 66` bytes. |
+| `Payload requires ...; capacity is ...` | The shorter of the original/compressed message exceeds the selected mode's capacity (`B - 66` keyed; `B - 54` no-key). |
 | `Insufficient dry pixels` or an unreachable syndrome | Wet constraints and the fixed code prevent embedding on that cover at that rate. Do not interpret nominal byte capacity as guaranteed feasibility. |
 | `Native traceback exceeds the resource limit` | The trellis cannot allocate or support the needed traceback. A checkpointed low-memory encoder is not implemented. |
 | `No valid authenticated payload` | Extraction could not authenticate the recovered message; wrong key/profile, no message, or damage are possible causes. |
+| `No valid plaintext payload` | No-key extraction failed its frame checks; there may be no no-key message, the rate may be wrong, or the image may be damaged. CRC is not tamper protection. |
 | `Output already exists; choose a new file` | The CLI refuses to replace any existing output, including an original cover or key. |
 
 Do not share the original cover alongside its stego when relying on an unknown-cover threat model: direct comparison reveals changes. Do not use the public experiment key for actual communication. Preserve the stego pixels exactly during transport, and agree on the rate separately. The tool does not exchange keys, securely erase process memory, preserve arbitrary metadata, or decide whether a real-world cover source is appropriate.
@@ -486,8 +519,8 @@ Do not share the original cover alongside its stego when relying on an unknown-c
 | File | Responsibility |
 |---|---|
 | [cli.py](src/stegolab/cli.py) | Commands, binary file inputs, error reporting, and no-overwrite output handling |
-| [system.py](src/stegolab/system.py) | Profile, framing, encryption, the two embedding stages, PNG self-check, and decryption |
-| [primitives.py](src/stegolab/primitives.py) | Byte formats, HMAC streams, derivation, shuffles, matrix masks, and bit order |
+| [system.py](src/stegolab/system.py) | Profile, both frame formats, keyed encryption/no-key CRC, the two embedding stages, PNG self-check, and extraction |
+| [primitives.py](src/stegolab/primitives.py) | Byte formats, keyed/public layout roots, HMAC streams, derivation, shuffles, matrix masks, and bit order |
 | [costs.py](src/stegolab/costs.py) | Directional residual costs, integer weights, and wet constraints |
 | [coding.py](src/stegolab/coding.py) | Validated Python interface to the native trellis |
 | [balance.py](src/stegolab/balance.py) | Cover activity groups and the sign-balancing interface |

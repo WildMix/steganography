@@ -15,7 +15,10 @@ def context(width: int, height: int, size: int) -> bytes:
     return b"STEG-BP/1" + struct.pack(">IIQB", width, height, size, 10)
 
 
-def root_key(key: bytes) -> bytes:
+def root_key(key: bytes | None) -> bytes:
+    if key is None:
+        # Deliberately public: supports interoperable, unencrypted no-key mode.
+        key = hashlib.sha256(b"STEG-BP/1/public-plaintext-layout").digest()
     if not isinstance(key, bytes) or len(key) != 32:
         raise ValueError("Shared key must contain exactly 32 random bytes")
     return mac(hashlib.sha256(b"STEG-BP/1/root").digest(), key)

@@ -193,6 +193,42 @@ def main():
               "multiple-message/key-reuse attacks, and distribution shift. Lossy image transformations "
               "are unsupported. Arbitrary input metadata is not preserved. No claim of universal KL/TV "
               "security or immunity to deep networks follows from this experiment.", ""]
+    public_progress = ART / "public_probe" / "progress.json"
+    if public_progress.exists():
+        progress = read(public_progress)
+        lines += ["## Public-layout exploratory probe", "",
+                  "This is a separate, smaller, resumable experiment at 0.05 gross bpp with the balanced "
+                  "encoder and 32-byte messages. It uses the frozen source-group splits, but only their "
+                  "first 120 train, 60 validation, and 120 test images; it is not the original full-scale "
+                  "confirmation and does not establish performance across message structures. Each completed "
+                  "image has an independently saved round-trip and feature record.", "",
+                  "| Partition | Completed / target | Rejected |", "|---|---:|---:|"]
+        for part, item in progress["counts"].items():
+            lines.append(f"| {part} | {item['completed']} / {item['target']} | {item['rejected']} |")
+        result_path = ART / "public_probe" / "results.json"
+        if result_path.exists():
+            result = read(result_path)
+            lines += ["", "Held-out classical results (models fitted only on this public-mode probe):", "", *table()]
+            for detector, item in result["detectors"].items():
+                lines.append(metric_row(result["variant"], detector, item["test"]))
+        else:
+            lines += ["", "Detector fitting or held-out evaluation is pending; do not treat generation progress as a resistance result."]
+        cnn_path = ART / "public_probe" / "cnn_transfer.json"
+        if cnn_path.exists():
+            lines += ["", "Frozen keyed-trained CNN transfer to public images (not retrained for public mode):", "",
+                      *table(), metric_row("public_balanced_0p05_probe", "CNN transfer", read(cnn_path)), ""]
+        protocol_path = ART / "public_probe" / "protocol_detection.json"
+        if protocol_path.exists():
+            item = read(protocol_path)
+            lines += ["", f"Public-format extraction attack: {item['recovered_stegos']}/{item['tested_stegos']} "
+                      f"test stegos recovered; {item['false_positives']}/{item['tested_covers']} "
+                      "ordinary covers falsely accepted. This is a format-aware test, not an image-only CNN. "
+                      "Therefore public mode fails against an attacker who knows this public algorithm, "
+                      "regardless of the image-only AUCs above.", ""]
+        lines += ["", "The public salt and layout seed can be recovered or computed by any observer. A salt-aware "
+                  "adversary can run the public extractor directly; the AUC table only measures image-only "
+                  "detectors without that protocol knowledge. Random salt does not provide secrecy or "
+                  "cryptographic authentication.", ""]
     test_report = ART / "test-results.xml"
     if test_report.exists():
         suites = list(ET.parse(test_report).getroot().iter("testsuite"))
@@ -201,6 +237,10 @@ def main():
                   f"Saved full-suite run: {count('tests')} tests, {count('failures')} failures, "
                   f"{count('errors')} errors, {count('skipped')} skips. The machine-readable record is "
                   "`artifacts/test-results.xml`. Correctness tests are separate from resistance measurements.", ""]
+    if (ART / "public_probe" / "protocol_detection.json").exists():
+        lines[2:2] = ["Public no-key mode is **not resistant to a format-aware attacker**: the public "
+                      "extractor recovered every tested stego message. Its image-only AUCs below do not "
+                      "override that result.", ""]
     (ROOT / "RESULTS.md").write_text("\n".join(lines), encoding="utf-8")
     print(ROOT / "RESULTS.md")
 
