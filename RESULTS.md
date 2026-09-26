@@ -180,3 +180,21 @@ The public salt and layout seed can be recovered or computed by any observer. A 
 ## Correctness verification
 
 Saved full-suite run: 19 tests, 0 failures, 0 errors, 0 skips. The machine-readable record is `artifacts/test-results.xml`. Correctness tests are separate from resistance measurements.
+
+## Native extraction-only optimization: runtime and compatibility
+
+This is a runtime experiment, **not a new statistical-resistance result**. Windows extraction now omits column HMACs for zero-parity pixels and accumulates the identical syndrome without allocating the full column array. Sender output, encryption, format and authentication are unchanged; embedding's extraction self-check retains cached full matrices.
+
+The immediately preceding native package/DLL was saved in `artifacts/runtime_extract/20260926/reference`. A fresh-process comparison completed **36 before/after pairs (72 timed CLI runs)** on three 512-by-512 photographs and one 1920-by-1490 photograph: 30 keyed-mode pairs and six public-feature pairs, covering automatic/fixed rates, short/binary/compressed messages. Every recovered message was verified byte-for-byte. Order alternated within pairs; filesystem caches were warm; no observations were removed.
+
+| Timing boundary | Faster pairs | Median paired time saving | Paired saving range |
+|---|---:|---:|---:|
+| Bootstrap and body syndrome recovery | 36 / 36 | 48.45% | 15.28% to 71.88% |
+| CLI extraction workflow, excluding interpreter startup/imports and final JSON-log writing | 31 / 36 | 21.93% | -69.99% to 48.93% |
+| Whole CLI, including startup/imports, I/O, logs and process exit | 21 / 36 | 0.76% | -39.66% to 24.82% |
+
+The kernel improvement is useful, but this noisy workstation run does **not** establish a reliable substantial end-to-end CLI speedup. Median paired percentages are not ratios of marginal median times. The removed column arrays account for `2*N` bytes of avoided allocation; peak process-memory reduction was not measured. The format/security invariants are unchanged, with no claim of improved AUC or cryptographic strength.
+
+Per-configuration timings, explanation and reproduction commands are in [README.md](README.md#native-extraction-acceleration). Evidence is checkpointed under `artifacts/runtime_extract/20260926/comparison`: `records.jsonl`, `summary.json`, `metadata.json`, copied input fixtures, per-run console/JSON logs and recovered payloads. Resume was also checked successfully without rerunning completed cases. The driver is `scripts/benchmark_native_extraction.py`; source/DLL/input checksums protect against mixed-configuration resumes. These local artifacts and the baseline snapshot are ignored by Git and need separate backup.
+
+The post-change suite passed **175 tests**, including independent syndrome calculations, all supported heights, boundary/invalid inputs, fallback behavior, keyed/public compatibility, authenticated failure handling, byte-identical PNG cross-backend tests and cached embedding self-checks. Its separate saved report is `artifacts/runtime_extract/20260926/tests.xml`; the older correctness record above is retained as historical evidence.

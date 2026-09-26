@@ -1,10 +1,52 @@
 """Wire-compatible primitive inputs and byte ordering for STEG-BP/1."""
 from functools import lru_cache
+import ctypes
 import hashlib
 import hmac
+import os
 import struct
 
 import numpy as np
+
+
+@lru_cache(maxsize=1)
+def _native_backend():
+    """Optional batch implementation; old native engines keep working."""
+    if os.name != "nt":
+        return None
+    from .coding import library
+    try:
+        lib = library()
+    except (OSError, RuntimeError):
+        return None
+    if not hasattr(lib, "wire_backend_version") or lib.wire_backend_version() != 1:
+        return None
+    u8 = np.ctypeslib.ndpointer(dtype=np.uint8, ndim=1, flags="C_CONTIGUOUS")
+    u16 = np.ctypeslib.ndpointer(dtype=np.uint16, ndim=1, flags="C_CONTIGUOUS")
+    i64 = np.ctypeslib.ndpointer(dtype=np.int64, ndim=1, flags="C_CONTIGUOUS")
+    lib.wire_stream.argtypes = [ctypes.c_char_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, u8]
+    lib.wire_stream.restype = ctypes.c_int
+    lib.wire_permute.argtypes = [i64, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_uint64]
+    lib.wire_permute.restype = ctypes.c_int
+    lib.wire_columns.argtypes = [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32,
+                                ctypes.c_char_p, ctypes.c_uint64, u16]
+    lib.wire_columns.restype = ctypes.c_int
+    # Additive export: an already installed version-1 DLL remains usable.
+    if hasattr(lib, "wire_extract"):
+        lib.wire_extract.argtypes = [u8, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32,
+                                     ctypes.c_char_p, ctypes.c_uint64, u8]
+        lib.wire_extract.restype = ctypes.c_int
+    return lib
+
+
+def _accelerator():
+    # Diagnostic/reference switch, not a wire-format or cryptography setting.
+    return None if os.environ.get("STEGOLAB_NATIVE_PRIMITIVES") == "0" else _native_backend()
+
+
+def _check_native(status):
+    if status:
+        raise RuntimeError(f"Native wire primitive failed: {status}")
 
 
 def mac(key: bytes, data: bytes) -> bytes:
@@ -42,7 +84,16 @@ class Stream:
         if available < count:
             self.buffer = self.buffer[self.position:]
             self.position = 0
-            for _ in range((count - available + 31) // 32):
+            blocks = (count - available + 31) // 32
+            accelerator = _accelerator()
+            if accelerator is not None and self.counter + blocks <= 1 << 64:
+                output = np.empty(blocks * 32, dtype=np.uint8)
+                _check_native(accelerator.wire_stream(bytes(self.key), len(self.key),
+                                                     self.counter, blocks, output))
+                self.buffer.extend(output.tobytes())
+                self.counter += blocks
+                blocks = 0
+            for _ in range(blocks):
                 if self.counter >= 1 << 64:
                     raise OverflowError("Stream exhausted")
                 self.buffer.extend(mac(self.key, b"STEG-BP/1/stream\x00"
@@ -55,6 +106,10 @@ class Stream:
 
 def permute(values: np.ndarray, key: bytes) -> np.ndarray:
     result = np.array(values, dtype=np.int64, copy=True)
+    accelerator = _accelerator()
+    if accelerator is not None and result.ndim == 1:
+        _check_native(accelerator.wire_permute(result, len(result), bytes(key), len(key)))
+        return result
     stream = Stream(key)
     # Fetch the ordinary draws in one batch without changing stream order.
     block = stream.take(max(0, len(result) - 1) * 8)
@@ -94,6 +149,11 @@ def columns(n: int, m: int, height: int, key: bytes) -> np.ndarray:
     if not 1 <= m <= n or not 1 <= height <= 15:
         raise ValueError("Invalid matrix dimensions")
     result = np.empty(n, dtype=np.uint16)
+    accelerator = _accelerator()
+    if accelerator is not None:
+        _check_native(accelerator.wire_columns(n, m, height, bytes(key), len(key), result))
+        result.flags.writeable = False
+        return result
     bitmask = (1 << height) - 1
     forced = 1 | (1 << (height - 1))
     for row in range(m):
@@ -104,6 +164,30 @@ def columns(n: int, m: int, height: int, key: bytes) -> np.ndarray:
             result[col] = ((int.from_bytes(digest[:2], "big") & bitmask) | forced) & active
     result.flags.writeable = False
     return result
+
+
+def extract_syndrome(parity: np.ndarray, m: int, height: int, key: bytes, *,
+                     reuse_columns: bool = False) -> np.ndarray:
+    """Recover the same syndrome without hashing zero-parity columns.
+
+    Embedding's self-check opts into its already populated matrix cache. The
+    fallback also supports older DLLs, non-Windows hosts and diagnostic flags.
+    Native failures propagate; they never silently switch implementations.
+    """
+    from . import coding
+    parity = np.asarray(parity)
+    if (parity.ndim != 1 or not 1 <= m <= len(parity) or not 1 <= height <= 15
+            or np.any((parity != 0) & (parity != 1))):
+        raise ValueError("Invalid extraction dimensions or parity bits")
+    parity = np.ascontiguousarray(parity, dtype=np.uint8)
+    accelerator = _accelerator()
+    if (not reuse_columns and os.environ.get("STEGOLAB_NATIVE_EXTRACT") != "0"
+            and accelerator is not None and hasattr(accelerator, "wire_extract")):
+        result = np.empty(m, dtype=np.uint8)
+        _check_native(accelerator.wire_extract(parity, len(parity), m, height,
+                                              bytes(key), len(key), result))
+        return result
+    return coding.extract(parity, m, columns(len(parity), m, height, key), height)
 
 
 def bits(data: bytes) -> np.ndarray:

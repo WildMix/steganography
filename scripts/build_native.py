@@ -12,6 +12,8 @@ if not compiler:
 output = folder / ("stc.dll" if os.name == "nt" else "stc.so")
 flags = ["-O3", "-std=c++17", "-shared", "-DNDEBUG"]
 flags += ["-static", "-static-libgcc", "-static-libstdc++"] if os.name == "nt" else ["-fPIC"]
-command = [compiler, *flags, str(folder / "stc.cpp"), "-o", str(output)]
+command = [compiler, *flags, str(folder / "stc.cpp"), str(folder / "primitives.cpp"), "-o", str(output)]
+if os.name == "nt":
+    command += ["-lbcrypt"]
 subprocess.run(command, check=True)
 print(output)

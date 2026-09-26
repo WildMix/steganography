@@ -2,11 +2,13 @@
 
 An executable implementation of `steganography_master_blueprint.md`, plus an experimental sign-balancing extension and a reproducible statistical-resistance benchmark. Everything stays local. This is research software; successful extraction and low measured detector AUC do not establish universal undetectability.
 
-Reading guide: [commands](#embed-and-extract), [basic concepts](#what-the-algorithm-actually-does), [input restrictions](#why-this-version-restricts-its-inputs), [sender walkthrough](#sender-the-embedding-process), [experimental sign balancing](#7-experimental-conditional-residual-sign-balancing), [receiver walkthrough](#receiver-extraction-without-the-original-image), [measured resistance](#what-the-experiments-demonstrated), and [experiment reproduction](#reproduce-the-experiments).
+Reading guide: [commands](#embed-and-extract), [analyze without embedding](#analyze-without-embedding), [timed progress logs](#timed-progress-logs), [basic concepts](#what-the-algorithm-actually-does), [input restrictions](#why-this-version-restricts-its-inputs), [sender walkthrough](#sender-the-embedding-process), [experimental sign balancing](#7-experimental-conditional-residual-sign-balancing), [receiver walkthrough](#receiver-extraction-without-the-original-image), [measured resistance](#what-the-experiments-demonstrated), [automatic-rate runtime measurements](#does-automatic-rate-reduce-execution-time), [exact-output acceleration](#exact-output-native-acceleration), and [experiment reproduction](#reproduce-the-experiments).
+
+For a visual explanation, open [the interactive animation](animation/index.html) in a browser. Its 17 chapters follow `HELLO` from bytes into pixels and back, with playback controls, interactive equations, and a verified example from the real encoder. It works offline without installation; see [animation controls and reproduction](animation/README.md).
 
 ## Install and verify
 
-Python 3.11 or newer and GCC's `g++` are required. The implementation uses a small C++ shared library for exact syndrome-trellis optimization and Python for cryptography, image processing, and experiments.
+Python 3.11 or newer and GCC's `g++` are required. The implementation uses a small C++ shared library for exact syndrome-trellis optimization and Python for authenticated encryption, image processing, and experiments. Windows builds also batch the existing HMAC streams, pixel shuffles, and matrix generation in native code using the system cryptographic provider; the wire format and resulting pixels are unchanged. Other platforms retain the Python implementations of these primitives.
 
 ```powershell
 python -m venv .venv
@@ -34,9 +36,11 @@ The CLI supports two distinct payload modes. Supplying `--key` requires the same
 .\.venv\Scripts\stegolab.exe extract plain_stego.png --output plain_recovered.txt --rate 0.05
 ```
 
-Before computing image costs or changing pixels, `embed` prints the payload's original byte count, its stored byte count after optional compression, and three size measures. **Net bpp** is `8 × original message bytes / image pixels`; **stored net bpp** uses the compressed size when compression helps; **gross bpp** is the fixed embedded frame size, including salt, framing, padding, and authentication overhead, divided by image pixels. **Capacity used** is `stored bytes / maximum stored bytes × 100%` (the keyed maximum is `floor(image pixels × rate / 8) − 66`). Thus a highly compressible message can have original net bpp above gross bpp yet still fit. The stage-based progress bar is printed to stderr; it marks completed stages, **not elapsed time or a reliable time estimate**. The final machine-readable JSON remains on stdout. An oversized message reports its percentage and fails before cost-map computation or output creation; an image can still fail later if too many positions are unusable.
+Before computing image costs or changing pixels, `embed` prints the payload's original byte count, its stored byte count after optional compression, and three size measures. **Net bpp** is `8 × original message bytes / image pixels`; **stored net bpp** uses the compressed size when compression helps; **gross bpp** is the fixed embedded frame size, including salt, framing, padding, and authentication overhead, divided by image pixels. **Capacity used** is `stored bytes / maximum stored bytes × 100%` (the keyed maximum is `floor(image pixels × rate / 8) − 66`). Thus a highly compressible message can have original net bpp above gross bpp yet still fit. The stage-based progress bar is printed to stderr; it marks completed stages, **not elapsed time or a reliable time estimate**. The console contains readable logs only; optional machine-readable JSON is saved with `--output-logs FILE`, never printed to stdout. An oversized message reports its percentage and fails before cost-map computation or image output creation; an image can still fail later if too many positions are unusable.
 
-The same preflight logs the **suggested minimum gross rate** that fits the stored bytes and the **chosen gross rate**. Use `--rate auto` with `embed` to choose that exact minimum automatically; both rates are also included in its final JSON. The suggestion is `max(0.0025, 8 × (stored bytes + 66) / image pixels)` for keyed mode, subject to the supported maximum of 0.2 bpp. It is a byte-capacity minimum, not a promise that the image's usable pixels or statistical resistance are sufficient. The exact result can be a fraction such as `43/16384`; pass that **same exact value** to `extract --rate`. Extraction cannot use `--rate auto`, because it does not know the sender's message size before decoding.
+The same preflight logs the **suggested minimum gross rate** that fits the stored bytes and the **chosen gross rate**. Use `--rate auto` with `analyze` or `embed` to choose the minimum size-fitting budget automatically; both rates are also included in the optional JSON file. The suggestion is `max(0.0025, 8 × (stored bytes + 66) / image pixels)` for keyed mode, subject to the supported maximum of 0.2 bpp. It is a byte-capacity minimum, not a promise that the image's usable pixels or statistical resistance are sufficient. **CLI rates are decimals**, normally with eight decimal places, such as `0.00262452`. Copy the logged chosen rate (or JSON `rate` when exporting logs) into `extract --rate`. Extraction cannot use `--rate auto`, because it does not know the sender's message size before decoding.
+
+Internally, exact arithmetic is retained. Decimal rate strings are rounded upward only if doing so preserves the same whole-byte frame budget; exceptional manually supplied rates get additional decimal places if necessary. This prevents rounding down from removing a required byte, or rounding up from changing the layout. Legacy fractional rate inputs remain accepted, but are no longer printed as fractions by the CLI. **Chosen/suggested rate** is the copyable profile setting; **actual gross bpp** is `8 × allocated frame bytes / pixels`, rounded for display. The latter can be slightly smaller because only whole bytes are allocated: do not substitute the displayed actual gross bpp for the reported chosen rate when extracting. The Python API retains exact rate strings for compatibility.
 
 The no-key mode provides **no confidentiality**: anyone who knows the public format can recover the message without a secret. Its public pseudorandom layout, salt, padding, and reversible whitening are not encryption. A CRC detects ordinary accidental payload corruption; it is not a cryptographic authentication tag and cannot prove who created the message or prevent deliberate changes. For confidential messages, always supply a private key to both commands. The `--message` argument names a file whose raw bytes are embedded; encode text as UTF-8 yourself if you need UTF-8 bytes, and extraction writes those bytes back unchanged.
 
@@ -61,6 +65,59 @@ assert extract_and_decrypt(public_stego_png, None, Profile("0.05")) == secret_by
 Both paths use operating-system randomness for the per-image salt and frame padding. In encrypted mode, the production path combines it with the private key. The no-key mode deliberately substitutes a fixed, publicly specified layout seed; it provides interoperability, not secrecy. Deterministic randomness and the explicitly public benchmark key must never protect real messages. The bounded in-process caches retain key-dependent mappings; this implementation does not claim secure memory erasure or resistance to local memory inspection.
 
 The measured detectors are key-blind and are not given corresponding original covers. Knowing the original image permits direct comparison; knowing the shared key permits authenticated extraction as a presence test. The public benchmark dataset/key is therefore not a secure live channel against a lookup-capable or key-informed observer.
+
+## Analyze without embedding
+
+Use the same image, message, key, rate and strategy options as `embed`, without `--output`:
+
+```powershell
+# Compare the selected frame with the minimum size-fitting frame.
+.\.venv\Scripts\stegolab.exe analyze cover.png --message secret.txt --key private.key --rate 0.05 --strategy balanced
+
+# Inspect the frame that automatic rate selection would use.
+.\.venv\Scripts\stegolab.exe analyze cover.png --message secret.txt --key private.key --rate auto --strategy balanced
+```
+
+`analyze` validates and decodes the PNG, checks the key length, tries the same raw DEFLATE compression as embedding, and calculates the frame with the **same shared planner**. It reports original/stored message bytes, net bpp, chosen and suggested rates, actual gross bpp, capacity usage, free space and any deficit. The byte breakdown includes the salt, header, stored message, padding and authentication tag. The 18-byte header is one version byte, one compression-flag byte, eight bytes for the original length and eight for the stored length. In keyed mode, the header, message and padding are encrypted together; the separate 32-byte salt and 16-byte tag bring fixed overhead to 66 bytes. The fixed 12-byte zero nonce occupies **no frame bytes**. Neither the shared key nor the associated data is embedded.
+
+For an uncompressed five-byte `HELLO` message and a 512 × 512 image:
+
+| Component | Chosen `0.05000000` bpp | Suggested `0.00250000` bpp | Suggested minus chosen |
+|---|---:|---:|---:|
+| Salt | 32 bytes | 32 bytes | 0 |
+| Header | 18 bytes | 18 bytes | 0 |
+| Stored message | 5 bytes | 5 bytes | 0 |
+| Random padding | 1,567 bytes | 10 bytes | −1,557 bytes |
+| Authentication tag | 16 bytes | 16 bytes | 0 |
+| Complete allocated frame | 1,638 bytes | 81 bytes | −1,557 bytes |
+
+The padding is the unused **message capacity within the selected frame**, not unused capacity throughout the image. A fixed-rate analysis always shows both columns; `auto` shows the selected minimum frame once. If the chosen rate is too low, padding is displayed as zero and the deficit is explicitly reported: that is an infeasible frame, not a promise that the component sizes fit. A suggested rate above `0.20000000` is explicitly unsupported. Analysis of a valid but infeasible configuration completes successfully, with JSON `fits_by_size: false`; invalid files, keys or explicit rates produce a CLI error. Embedding still rejects an infeasible configuration before computing costs or creating an output.
+
+Analysis does **not** generate salt/padding, derive keys, encrypt, build pixel permutations or codes, compute adaptive costs, or modify an image. By default it writes no files; `--output-logs` writes only the explicitly requested JSON report. Analysis cannot predict changed-pixel counts, PSNR, detector AUC, or whether wet pixels and trellis constraints make a size-fitting frame impossible. `--strategy` is validated and reported but is not executed. Omitting `--key` analyzes the existing public format instead: 32-byte salt + 18-byte header + stored message + 4-byte CRC + padding, with **no authentication tag or confidentiality**.
+
+All user-facing details are in readable stderr logs, including mode, capacity/frame breakdown, decimal rates, step timings, and output paths and sizes where applicable. Stdout is empty. To save the same information in a machine-readable form, add **`--output-logs FILE`** to any command (`analyze`, `embed`, `extract`, or `keygen`). Analysis reports include `chosen` and `suggested` frame dictionaries, decimal `rate`/`suggested_rate` strings, `fits_by_size`, `seconds`, and `timings`. For example:
+
+```powershell
+.\.venv\Scripts\stegolab.exe analyze cover.png --message secret.txt --key private.key --rate auto --output-logs analysis.json
+$analysis = Get-Content -Raw analysis.json | ConvertFrom-Json
+$analysis.chosen.padding_bytes
+$analysis.rate
+```
+
+JSON reports never replace or suppress the readable console log. Report files use exclusive creation: existing files are not overwritten, and `--output-logs` cannot name the same destination as `--output`. The report destination is reserved before processing begins. Runtime failures also save their error and completed/failed stage timings when a report file has been opened successfully; argument/preflight errors do not create a report. No secret message contents or key bytes are logged. Scripts that previously parsed stdout must now request and read a report file.
+
+## Timed progress logs
+
+`analyze`, `embed`, `extract`, and `keygen` report each stage as it starts, its elapsed seconds when it finishes, and a final total. Completed timing lines remain visible in interactive terminals and redirected logs. Steps have descriptive titles such as “Computing adaptive costs from wavelet residuals” and “Rebuild bootstrap parity matrix and recover the 32-byte salt”, with no walkthrough-number prefixes. The methods are explained in [EMBEDDING_WALKTHROUGH.md](EMBEDDING_WALKTHROUGH.md), but logs stand on their own.
+
+- **Analyze:** input reading, PNG validation, compression/frame planning, comparison/reporting.
+- **Embed:** those preparation steps, bootstrap key derivation and shuffling, wavelet costs/wet pixels, salt/body keys, frame/padding, authenticated encryption, whitening, body shuffling, separate bootstrap/body matrix construction, trellis optimization, actual pixel changes and parity checks, optional sign balancing, image statistics, PNG serialization, full extraction self-check, and output writing.
+- **Extract:** input reading and PNG validation, context/root key, bootstrap positions/matrix and salt recovery, body keys/positions/matrix and syndrome recovery, undoing whitening, authenticated decryption, header/length validation, removal of padding, optional decompression, and output writing. It never needs a cover image or cost map. No-key mode substitutes public frame/CRC checks for authenticated decryption.
+- **Keygen:** secure random-byte generation and exclusive output writing.
+
+The bar indicates progress through stages, **not percentage of execution time or an ETA**. Timings use a monotonic clock. The final total covers the CLI workflow, including input/output, readable reporting and the embedding self-check, but excludes Python startup/imports, argument parsing, and final optional JSON serialization/writing. Per-stage measurements are sequential, not overlapping; small reporting overhead can make their sum slightly smaller than the total. Very short stages can display `0.000 s`; exported JSON retains their unrounded durations. The embedding self-check is one aggregate stage, not a second nested set of extraction timings. Runtime failures identify the failed stage and elapsed total without claiming 100% completion. Logs do not print message contents, key material, salt values or ciphertext.
+
+The additions are covered by CLI/API tests for keyed/public framing, compression, infeasible configurations, no-write/no-crypto analysis, copyable decimal rates at byte boundaries, per-stage timing, analyze → embed → extract recovery, readable-only console output, and optional JSON report safety. The complete suite passed **85 tests** after these changes. They do not change the cipher, wire layout, cost model, trellis optimizer or sign-balancing rules. An additional compatibility check reproduced **12 preserved real-photograph experiment outputs byte-for-byte**, including their non-timing embedding statistics: photograph 1883, three message types, fixed/auto rates and baseline/balanced strategies from `artifacts/runtime_exact/20260926/comparison`. All 12 also extracted correctly with their newly displayed decimal rates; the archived inputs and outputs were only read, never overwritten.
 
 ## What the algorithm actually does
 
@@ -192,7 +249,7 @@ For a 512-by-512 image carrying an incompressible 32-byte message in keyed mode:
 | Chosen rate | Total embedded frame | Random keyed-frame padding | Gross target bits |
 |---|---:|---:|---:|
 | `0.05` bpp | 1,638 bytes | 1,540 bytes | 13,104 bits |
-| `auto` (exactly `49/16384`, about 0.002991 bpp) | 98 bytes | 0 bytes | 784 bits |
+| `auto` (reported as `0.00299073` bpp) | 98 bytes | 0 bytes | 784 bits |
 
 Both frames include the same 32-byte message, 18-byte header, 16-byte authentication tag, and 32-byte salt. At `0.05`, padding expands the inner encrypted frame to the chosen budget; at `auto`, the byte budget just fits those fields and the message. Thus `--rate auto` reduces the embedded frame and its padding, rather than making padding less detectable. It chooses the smallest *byte-fitting* rate supported by the profile, not a statistically optimal rate or a guarantee that every cover can embed. The receiver must be given the exact selected rate. An explicit lower rate has the same capacity effect if it fits the message.
 
@@ -465,15 +522,17 @@ This proves a particular output round-trips correctly under the implemented prof
 The receiver supplies the stego PNG, the same rate/profile, and either the same shared key (keyed mode) or no key (no-key mode). It does not need the original cover, cost map, message length, sender's modification signs, or `--strategy`.
 
 1. Strictly decode the PNG and calculate `N`, `B`, and `ctx` from its dimensions and the supplied rate.
-2. Derive the root, split key, and bootstrap code key. Reconstruct the bootstrap pool and its matrix.
+2. Derive the root, split key, and bootstrap code key. Reconstruct the bootstrap pool and the rules defining its matrix.
 3. Read the even/odd bits at bootstrap positions and evaluate its parity equations. Pack the resulting 256 bits into the 32-byte salt.
-4. Derive the salt-dependent keys, shuffle the body pool, and reconstruct the body matrix.
+4. Derive the salt-dependent keys, shuffle the body pool, and reconstruct the rules defining the body matrix.
 5. Evaluate the body's parity equations to recover `8*(B-32)` bits. Pack them into the whitened ciphertext-and-tag bytes.
 6. XOR with the same whitening stream. In keyed mode, authenticate and decrypt with ChaCha20-Poly1305, the same nonce, and associated data. In no-key mode, these bytes are the unencrypted frame.
 7. In keyed mode, check the authenticated version, compression flag, lengths, and bounds. In no-key mode, check version `2`, the bounds, and CRC-32 over the header and stored data. The CRC detects accidental damage; it cannot authenticate a sender or stop deliberate forgery. Discard padding using the stored length.
 8. Return the raw bytes, or decompress raw DEFLATE with a bound based on the original length. Require the exact expected length and a complete stream without trailing compressed data.
 
 The crucial identity is `H * parity(stego) = target`. Extraction evaluates that identity directly; it does not search for changed pixels. Recomputing costs from a modified image is unnecessary and could give different results, which is why costs never determine the receiver's position ordering.
+
+On an updated Windows build, standalone extraction generates only columns whose observed parity is one and immediately accumulates their contributions; it does not allocate the full column array. This evaluates the **same** matrix equations. Older builds use the full array, and embedding's built-in self-check reuses its already computed arrays. See [Native extraction acceleration](#native-extraction-acceleration) for the exact mechanism, measurements and limitations.
 
 In keyed mode, an ordinary image, wrong key, wrong rate/profile, or sufficiently damaged payload normally ends in `No valid authenticated payload`. In no-key mode, the corresponding error is `No valid plaintext payload`. There is no reliable unauthenticated "message present" marker. Anyone who knows the no-key format can try extracting the payload; anyone with the shared key can use successful keyed extraction as a presence test.
 
@@ -513,6 +572,195 @@ PSNR measures pixel-level fidelity, not statistical security; sign balancing lea
 
 Nothing here establishes universal indistinguishability, security against a known original cover, immunity to stronger detectors, color-image resistance, or safe repeated use across arbitrary sources. Preserve the frozen measurements when extending the algorithm and use independent data for new confirmation.
 
+## Does automatic rate reduce execution time?
+
+These measurements were recorded **before the native primitive acceleration** described in the next section. They remain the historical comparison of choosing `auto` versus `0.05`; the [original-versus-optimized comparison](#exact-output-native-acceleration) measures the later implementation speedup separately.
+
+**Measured result: a modest saving for small messages, and no consistent saving for the larger message tested.** Reducing the complete frame from 1,638 to 81 bytes did not make embedding twenty times faster: the `HELLO` benchmark saved about 5% of complete CLI runtime. The frame describes how many bits must be represented, while much of the implementation's work still depends on the number of image pixels.
+
+The run on 2026-09-26 used three real BOSSbase photographs (`1883`, `4000`, `8872`), the first three covers in the existing training manifest. Their native 512-by-512 grayscale rasters were losslessly encoded as PNG before timing. Each message was tested on each photograph five times at each rate: **90 measured CLI executions**, using keyed mode and `--strategy balanced`. None of these three messages became smaller after compression. Each pair used the same cover and message; rate order alternated, workload order was shuffled, and production salt/padding randomness remained enabled. Two initial CLI warm-ups were excluded. Execution was sequential on Windows 11 x64, Python 3.14.5, an Intel Family 6 Model 154 processor with 16 logical CPUs, with numerical-library thread limits set to one.
+
+The timer surrounded a fresh `python -m stegolab.cli embed` subprocess. It includes process startup, imports, input reads, all embedding stages, PNG encoding, built-in decode/extract/authenticate verification, output writing, and process exit. CLI output was captured through pipes. Filesystem caches were warm; this was an ordinary workstation run, not an isolated latency benchmark.
+
+| Message (original = stored bytes) | Auto requested bpp | Frame bytes, fixed → auto | Median CLI seconds, 0.05 | Median CLI seconds, auto | Median paired time saving | Auto faster pairs |
+|---|---:|---:|---:|---:|---:|---:|
+| `HELLO` (5) | 0.0025 | 1,638 → 81 | 2.543 | 2.404 | 5.25% | 14 / 15 |
+| Incompressible binary (32) | `0.00299073` | 1,638 → 98 | 2.486 | 2.409 | 4.17% | 13 / 15 |
+| Incompressible binary (1,024) | `0.03326417` | 1,638 → 1,090 | 2.515 | 2.527 | −0.29% | 6 / 15 |
+
+Paired saving is calculated as `100 × (fixed time − auto time) / fixed time` for each matched execution pair, then summarized by its median; it is not the percentage calculated from the two separately reported median times. Negative values mean auto took longer. No observations were removed: individual paired savings ranged from −27.0% to +7.3% for `HELLO`, −7.8% to +20.9% for 32 bytes, and −6.2% to +6.3% for 1,024 bytes. In particular, auto is not guaranteed to win on every invocation, and the 1,024-byte timings do not demonstrate a useful speed advantage.
+
+### Which stages account for the time?
+
+A separate **36-call API profile** measured `encrypt_and_embed`, including its PNG serialization and authenticated self-check: three photographs, three repeats, two rates, and both `baseline` and `balanced` strategies. Imports and filesystem I/O were outside this timer. Layout and matrix caches were cleared before every call, but reuse during that call's self-verification remained enabled, as in normal embedding. Timers wrapped whole functions without instrumenting the inner loops, and nested spans were excluded to avoid counting the same work twice.
+
+The following are **mean stage times** for `HELLO` with `balanced`, from nine calls per rate. They describe this separate API profile, not subdivisions of the CLI medians above.
+
+| Stage | 0.05 bpp, milliseconds | Auto, milliseconds |
+|---|---:|---:|
+| Bootstrap and body pixel shuffles | 613.0 | 616.6 |
+| Parity-matrix construction | 744.2 | 726.0 |
+| Adaptive image cost map | 60.2 | 60.5 |
+| Bootstrap syndrome-trellis optimization | 44.7 | 43.3 |
+| Body syndrome-trellis optimization | 365.1 | 289.0 |
+| Modification-sign balancing | 57.2 | 46.5 |
+| Remaining work: PNG, verification, framing, cryptography, etc. | 25.3 | 24.8 |
+| **Complete API call** | **1,909.7** | **1,806.7** |
+
+The same API experiment without sign balancing (`baseline`) also showed a modest reduction: median total time went from 1.833 to 1.737 seconds, with a 5.00% median paired saving. Therefore the observed improvement was not solely the result of changing fewer modification signs.
+
+The code explains the limited gain:
+
+- Both rates compute costs across the full image and shuffle the same number of pixel positions. Matrix construction still generates a column for every position. Shuffling and matrix construction alone consumed about 71% of the fixed-rate balanced API time.
+- Trellis height remains 10, so the native encoder still loops over 1,024 states for each pixel column. The dominant loop is proportional to `N × 2^10`, not just the number of embedded bits. Fewer target bits reduce row-constraint operations, but do not reduce the number of columns or eliminate the image-wide scan.
+- Sign balancing has fewer modified pixels to consider, but still initializes residual statistics over the full image. PNG processing and CLI startup also remain necessary.
+- Encryption, whitening, and padding process fewer bytes, but those small buffers were not the dominant expense. Automatic selection additionally performs an extra compression trial to determine the fitting rate.
+
+For this implementation and these inputs, use `auto` to avoid unnecessary embedded padding and reduce modifications; treat the measured runtime reduction as a small additional benefit. The timings cover three 512-by-512 photographs on one machine, not every image size or workload. They do not add new steganalysis evidence.
+
+All 126 measured embedding operations passed their built-in round-trip check. Six additional fresh-process CLI extractions, covering all three message sizes at both rates, recovered byte-identical messages. The reproducible driver is [scripts/benchmark_auto_rate.py](scripts/benchmark_auto_rate.py). Per-run timings, stage spans, failures, input/output hashes, software versions, source/native-binary hashes, subprocess logs, and generated PNGs are preserved under [artifacts/runtime_auto/20260926](artifacts/runtime_auto/20260926), including [summary.json](artifacts/runtime_auto/20260926/summary.json) and [records.jsonl](artifacts/runtime_auto/20260926/records.jsonl). These local artifacts are ignored by Git; the measurements above remain in this README.
+
+To repeat the measurement with a new timestamped output directory:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_auto_rate.py --covers 3 --repeats 5 --profile-repeats 3
+```
+
+Every completed observation is checkpointed immediately. To continue an interrupted run, supply its printed directory with `--output <directory> --resume` and the same cover/repeat settings. An existing directory is otherwise refused, so rerunning the benchmark does not replace the saved measurements.
+
+## Exact-output native acceleration
+
+The optimized Windows implementation substantially reduces runtime while preserving the same embedding output for the same image, message, key, salt, and padding. It retains the full-image computation: unchanged pixel parities still contribute to the syndrome equations, and the best positions to modify are only known after optimization. Simply selecting a smaller pixel pool would change those equations or the candidate solutions.
+
+The measured bottleneck was the overhead of executing HMAC and shuffle loops in Python. The optional native backend now batches three existing operations:
+
+- Generate exactly the same `HMAC-SHA256(key, label || counter)` stream blocks, including their original byte ordering and counter boundaries.
+- Perform exactly the same Fisher–Yates swaps and rejection sampling, consuming the same stream bytes in the same order.
+- Generate exactly the same HMAC-derived parity columns, with the same row/column numbers, forced mask bits, and truncated final rows.
+
+Hashing uses Windows' [reusable CNG HMAC contexts](https://learn.microsoft.com/en-us/windows/win32/seccng/creating-a-hash-with-cng), so keyed setup is reused within each batch. No new hash or random generator was designed. Shared-key derivation, salt/padding generation, ChaCha20-Poly1305, nonce/AAD handling, cost computation, the STC optimizer and its tie-breaking, and modification-sign balancing are unchanged. Existing receivers remain compatible. The native code is in [primitives.cpp](src/stegolab/native/primitives.cpp), with dispatch and the original Python fallback in [primitives.py](src/stegolab/primitives.py).
+
+### Exactness and measured speed
+
+Before editing the implementation, the original Python package and native DLL were preserved. **36 real-photograph cases** compared that independent snapshot with the optimized package in fresh processes: three BOSSbase photographs, three message types (`HELLO`, 1,024 incompressible bytes, and compressible text), two rates (`0.05` and `auto`), and both `baseline` and `balanced` strategies. Each case supplied identical research-only randomness to both versions. Every comparison matched the complete PNG bytes, pixel bytes, plaintext frame, ciphertext/tag bytes, associated data, derived encryption-key digest, and non-timing embedding statistics. Every generated image also passed authenticated extraction. Normal CLI use continues to generate fresh randomness, so two ordinary invocations are not expected to produce the same PNG.
+
+A separate timing comparison ran **72 complete CLI executions**, pairing the preserved original package with the optimized package. Each table row contains nine pairs: the same three photographs with three repetitions each, using `--strategy balanced`. Both versions ran sequentially in alternating order, with fresh production randomness. Timing includes process startup/imports, input/output, embedding, PNG serialization, and the authenticated self-check, as in the earlier benchmark. These are paired measurements from the same run, not a comparison against the earlier table's historical timings.
+
+| Message | Rate option | Original median CLI seconds | Optimized median CLI seconds | Median paired time saving | Optimized faster pairs |
+|---|---|---:|---:|---:|---:|
+| `HELLO` | `0.05` | 2.681 | 1.340 | 49.55% | 8 / 9 |
+| `HELLO` | `auto` | 2.804 | 1.355 | 55.08% | 9 / 9 |
+| 1,024 binary bytes | `0.05` | 2.778 | 1.300 | 53.18% | 8 / 9 |
+| 1,024 binary bytes | `auto` | 2.939 | 1.543 | 51.01% | 9 / 9 |
+
+Thus complete execution was roughly twice as fast on this Windows workstation, with the same embedding algorithm. Percentages are medians of paired savings, not ratios of the separately summarized median times. No outliers were removed: savings ranged from −27.91% to +64.80% across all 36 pairs, and the optimized version was faster in 34 pairs. The machine was not isolated from background activity; these measurements do not promise a particular latency on every invocation or platform.
+
+The full suite passed **47 tests**, including independent standard-library HMAC comparisons, empty/short/long keys, fragmented streams and counter boundaries, exact permutations and matrix columns, and byte-identical PNGs with cross-backend extraction. Compatibility checks also cover the public feature. These checks preserve the existing image-format and statistical-security behavior; they do not assert any stronger security claim or constitute a new detector experiment.
+
+The updated DLL has been built locally. After pulling these source changes elsewhere, rebuild it with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/build_native.py
+```
+
+Windows uses the new backend automatically when the updated library is available. Older libraries and other platforms continue to use the Python primitives. Setting the diagnostic environment variable `STEGOLAB_NATIVE_PRIMITIVES=0` also selects the Python path; it does not change the format or cryptographic algorithms.
+
+The original snapshot is preserved under `artifacts/runtime_exact/20260926/reference`. [Comparison results](artifacts/runtime_exact/20260926/comparison/summary.json), per-case encrypted-frame reports, exact PNG pairs, logs, and implementation hashes are saved under `artifacts/runtime_exact/20260926/comparison`. The [comparison driver](scripts/benchmark_exact_optimization.py) checkpoints after each completed case or timing pair. To repeat against that snapshot in a new directory:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_exact_optimization.py --reference artifacts/runtime_exact/20260926/reference --output artifacts/runtime_exact/repeat
+```
+
+Use `--resume` with the same paths to continue an interrupted comparison. The preserved snapshot and measurement artifacts are local files ignored by Git; the source changes, tests, and result tables above can be versioned.
+
+## Native extraction acceleration
+
+The `extract` command and `extract_and_decrypt` API now use an extraction-only Windows fast path. The shared-key mode remains the main workflow; the optional public mode also benefits. No CLI arguments, key files, stego images or rate profiles need converting.
+
+### What is skipped, and why the result is identical
+
+Let `y[i]` be pixel `i`'s parity (zero for an even value, one for an odd value) **after placing pixels in the existing keyed pool order**. Let `H[:, i]` be its parity-matrix column. Extraction computes over binary arithmetic:
+
+$$
+s = H y = \bigoplus_{i:y_i=1} H_{:,i}.
+$$
+
+Here, multiplication by zero gives an all-zero column; adding binary columns means XOR, with no carry. Consequently a pixel with parity zero makes no contribution. For example, for parities `[0, 1, 0, 1]`, the answer is column 1 XOR column 3: columns 0 and 2 never need generating. These are **current pixel parities**, not the locations changed by the sender; the receiver does not know the latter.
+
+Previously, the native receiver generated all `n` column HMACs, stored `n` 16-bit masks, then skipped zero-parity contributions inside `stc_extract`. The new `wire_extract` routine:
+
+1. Initializes the same reusable CNG HMAC context and an all-zero `m`-bit syndrome represented by `m` bytes.
+2. Traverses precisely the same row blocks and pixel indices.
+3. Reads each parity first. If it is zero, it does not hash that column.
+4. For parity one, computes the unchanged HMAC input: `STEG-BP/1/column`, its terminating zero byte, the 4-byte big-endian row index and the 8-byte big-endian column index.
+5. Applies the existing height mask, forced bits and final-row truncation, then immediately XORs those bits into the syndrome. It never retains a full array of column masks.
+
+Each column hash is independently addressed by row/index. It does **not** consume a sequential random stream, so skipping a column cannot shift subsequent values. The existing stream generation and Fisher-Yates shuffling still consume all their original draws. Bootstrap salt recovery, body recovery, bit order, whitening, ChaCha20-Poly1305 authentication/decryption, framing and bounded decompression are unchanged. This is an exact computation shortcut, not a new steganographic construction or a claim of improved detector resistance. No new CNN experiment is needed to test a receiver-only change that never alters the image.
+
+### Dispatch, memory and remaining work
+
+- A newly built Windows DLL exposes `wire_extract`; Python detects this additional export without changing the existing backend or wire-format version. An older DLL lacking the export, a non-Windows installation, or a disabled fast path uses the original matrix-based extraction. Actual native errors propagate rather than silently falling back.
+- **Embedding still needs all columns:** its optimizer must evaluate possible parity changes. The post-serialization extraction self-check explicitly reuses the two cached matrices that embedding just generated, avoiding new HMAC work. Standalone extraction uses the fused path; it neither fills nor automatically consults the column cache. Python callers deliberately repeating the same extraction can opt into the existing cached path with the diagnostic switch below.
+- For a pool of `n` pixels with `k` odd values, column hashing falls from `n` HMAC calls to exactly `k`. It is roughly halved only when odd/even pixels are roughly balanced. An all-odd pool saves no hashes; an all-even pool needs none.
+- Avoided column-array allocation is exactly `2*n` bytes per pool, or `2*N` bytes across bootstrap and body. At 2,860,800 pixels this is 5,721,600 bytes (about 5.46 MiB). This is an allocation calculation, **not** a measurement of total process memory reduction.
+- PNG decoding, all-pixel parity reads, keyed position shuffles, position caches, framing and authentication still run. Complexity remains linear in the pixel count; this does not make extraction proportional only to message length. A smaller `--rate` does not proportionally shrink those image-wide costs.
+- The browser receiver's HMAC-state reuse already had an equivalent in this native backend: reusable CNG contexts. The additional improvement here is parity-first hashing plus fused syndrome accumulation, not another cryptographic change.
+
+### Measured native extraction performance
+
+A paired comparison used the immediately preceding native implementation, **not** the much slower original Python hashing backend. There were 36 pairs (72 timed CLI processes): 30 keyed-mode pairs and six public-feature pairs. Three 512-by-512 photographs and one 1920-by-1490 photograph were used, with three repetitions per configuration. Small keyed `HELLO` rows combine all three small photographs (nine pairs); other rows have three pairs. Every output matched the original message byte-for-byte. The photographs had 49.95% to 50.81% odd pixels, so approximately half the column hashes were skipped.
+
+Processes ran sequentially in alternating before/after order, with fresh in-process caches, warm filesystem caches and one untimed warm-up per implementation. These are normal workstation timings, not isolated-machine measurements. No observations were removed. The two timing boundaries are deliberately distinguished:
+
+- **Workflow:** the CLI's normal total timer, including image/key reads, PNG decoding, layout reconstruction, extraction, authentication/decompression, readable logging and message output. It excludes interpreter startup/imports and final JSON-log serialization.
+- **Whole CLI:** an external timer covering process startup/imports, that complete workflow, final JSON-log writing and process exit. Both implementations exported the same kinds of logs.
+
+| Input / mode / message | Rate option | Pairs | Median workflow seconds, before → after | Median paired workflow saving | Median whole-CLI seconds, before → after | Median paired whole-CLI saving |
+|---|---|---:|---:|---:|---:|---:|
+| 512×512 / keyed / `HELLO` | `auto` | 9 | 0.1029 → 0.0889 | 20.62% | 0.8849 → 0.9398 | 0.92% |
+| 512×512 / keyed / `HELLO` | `0.05000000` | 9 | 0.0979 → 0.0750 | 25.30% | 0.8275 → 0.8775 | 3.10% |
+| 1920×1490 / keyed / `HELLO` | `auto` | 3 | 1.2167 → 0.9619 | 21.84% | 1.9838 → 2.1408 | -4.09% |
+| 1920×1490 / keyed / `HELLO` | `0.05000000` | 3 | 1.1060 → 1.1134 | 0.67% | 2.1650 → 2.5644 | 4.17% |
+| 512×512 / keyed / 1,024 binary bytes | `auto` | 3 | 0.0917 → 0.0715 | 22.01% | 0.8315 → 0.8542 | 0.59% |
+| 512×512 / keyed / 30,000 compressible bytes | `auto` | 3 | 0.1117 → 0.0847 | 30.47% | 0.8522 → 0.9159 | -0.44% |
+| 512×512 / public feature / `HELLO` | `auto` | 3 | 0.0922 → 0.0781 | 11.41% | 0.9349 → 0.8215 | 2.81% |
+| 1920×1490 / public feature / `HELLO` | `auto` | 3 | 0.9852 → 0.9087 | 17.69% | 1.7542 → 1.8408 | 5.33% |
+
+`auto` chooses `0.00250000` for these `HELLO` cases. It is the sender's choice; each extraction received that case's actual rate. The other auto messages use their own size-fitting rates. Percentages are the medians of **paired** savings, not the percentage difference between independently summarized medians. This can produce a positive paired saving even when the marginal median after-time is higher; the raw ordered pairs remain available for inspection.
+
+Across all 36 pairs, bootstrap-plus-body syndrome recovery was faster in **36/36**, with a **48.45% median paired time saving** (range 15.28% to 71.88%). Whole extraction workflow time improved in 31/36 pairs, with a 21.93% median paired saving. Whole-CLI time improved in only 21/36 pairs, with a **0.76% median paired saving** and a range of -39.66% to +24.82%. Startup and background variability masked much of the saved work. This run therefore supports retaining the faster, lower-allocation extraction kernel, but **does not demonstrate a reliable substantial reduction in end-to-end CLI latency**. In particular, it does not reproduce the browser receiver's overall speedup or prove that large-image CLI execution is consistently faster. These descriptive timings are not confidence intervals or universal speed guarantees.
+
+The full suite passed **175 tests** after this change. Checks include independent matrix/syndrome reconstruction at all supported trellis heights, all-zero/all-one/mixed parities, uneven blocks and truncated rows, short/long HMAC keys, invalid inputs, legacy/disabled-backend fallbacks, native-error propagation, keyed/public round trips, unchanged PNG bytes across primitive backends, authentication failure cases and explicit reuse of embedding's cached matrices. [The saved test report](artifacts/runtime_extract/20260926/tests.xml) is separate from the statistical-resistance experiments; no detector results were changed.
+
+### Build, disable and reproduce
+
+The updated DLL has been rebuilt locally. Other checkouts must rebuild from source; compiled native files are ignored by Git:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/build_native.py
+.\.venv\Scripts\stegolab.exe extract stego.png --key private.key --rate 0.00250000 --output recovered.bin
+```
+
+Use the actual decimal rate reported by embedding. Extraction still cannot infer it or accept `--rate auto`.
+
+To compare against full-column extraction while retaining the other native accelerations:
+
+```powershell
+$env:STEGOLAB_NATIVE_EXTRACT = "0"
+# Run an extract command with a NEW output filename.
+Remove-Item Env:STEGOLAB_NATIVE_EXTRACT
+```
+
+Removing that variable restores automatic fast-path selection. `STEGOLAB_NATIVE_PRIMITIVES=0` disables **all** optional native primitives, including this one; it is a different, slower reference configuration.
+
+The pre-change package and DLL are preserved under `artifacts/runtime_extract/20260926/reference`, separately from the older embedding-optimization snapshot. The [benchmark driver](scripts/benchmark_native_extraction.py) compares fresh CLI processes, validates every recovered message byte-for-byte and saves each individual run plus each completed pair. Raw console output, stage timings, source/DLL hashes, input copies and checksums are preserved with the [summary](artifacts/runtime_extract/20260926/comparison/summary.json).
+
+```powershell
+.\.venv\Scripts\python.exe scripts/benchmark_native_extraction.py --reference artifacts/runtime_extract/20260926/reference --output artifacts/runtime_extract/repeat
+```
+
+The default fixtures are the preserved `artifacts/runtime_exact/20260926/comparison` images and the local `atene_gray.png` photograph. Use `--fixtures` and `--large-cover` to specify their locations. These images, baseline snapshot and output artifacts are local, ignored by Git and must be backed up separately. Research keys and deterministic embedding randomness in this driver are public test data, never production secrets. Use `--resume` with the same output directory to continue; changed source/DLL/input hashes are rejected to avoid silently mixing configurations.
+
 ## Common failures and practical limits
 
 | Symptom | What it means |
@@ -535,7 +783,8 @@ Do not share the original cover alongside its stego when relying on an unknown-c
 |---|---|
 | [cli.py](src/stegolab/cli.py) | Commands, binary file inputs, error reporting, and no-overwrite output handling |
 | [system.py](src/stegolab/system.py) | Profile, both frame formats, keyed encryption/no-key CRC, the two embedding stages, PNG self-check, and extraction |
-| [primitives.py](src/stegolab/primitives.py) | Byte formats, keyed/public layout roots, HMAC streams, derivation, shuffles, matrix masks, and bit order |
+| [primitives.py](src/stegolab/primitives.py) | Byte formats, keyed/public layout roots, HMAC streams, derivation, shuffles, matrix masks, fused-extraction dispatch and bit order |
+| [primitives.cpp](src/stegolab/native/primitives.cpp) | Windows CNG batches and parity-first, matrix-free syndrome extraction |
 | [costs.py](src/stegolab/costs.py) | Directional residual costs, integer weights, and wet constraints |
 | [coding.py](src/stegolab/coding.py) | Validated Python interface to the native trellis |
 | [balance.py](src/stegolab/balance.py) | Cover activity groups and the sign-balancing interface |

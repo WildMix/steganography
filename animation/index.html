@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101719">
+  <title>A secret, in plain sight — Stegolab</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="fixture.js"></script>
+  <script defer src="animation.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="#chapter=1" aria-label="Stegolab, first chapter"><span class="brand-mark" aria-hidden="true">S<span>·</span></span> STEGOLAB <span class="brand-divider">/</span> <span class="muted">VISUAL FIELD NOTES</span></a>
+    <span class="edition">01 — THE EMBEDDING PROCESS</span>
+  </header>
+  <main>
+    <div class="intro">
+      <div><p class="eyebrow">AN INTERACTIVE EXPLANATION</p><h1>A secret, in plain sight<span>.</span></h1></div>
+      <p class="intro-note">Follow five letters into a picture.<br> Then bring them back, one step at a time.</p>
+    </div>
+    <section class="film" aria-label="Animated algorithm walkthrough">
+      <div class="film-top"><span><span class="status-dot"></span> <span id="phase">THE IDEA</span></span><span class="profile">HELLO <span>·</span> 512 × 512 <span>·</span> KEYED / BALANCED</span></div>
+      <div class="scene-layout">
+        <section class="narration" aria-labelledby="chapter-title">
+          <p class="eyebrow chapter-number" id="chapter-number">CHAPTER 01 / 17</p>
+          <h2 id="chapter-title"></h2>
+          <p id="chapter-intro" class="chapter-intro"></p>
+          <ol id="beats" class="beats"></ol>
+          <div class="takeaway"><span>THE THING TO REMEMBER</span><p id="takeaway"></p></div>
+        </section>
+        <div class="visual-column">
+          <div class="stage-wrap"><svg id="stage" viewBox="0 0 900 560" role="img" aria-labelledby="visual-title visual-desc"><title id="visual-title"></title><desc id="visual-desc"></desc><g id="drawing"></g></svg></div>
+          <div id="interaction" class="interaction" aria-label="Explore this step"></div>
+          <p id="visual-note" class="visual-note"></p>
+        </div>
+      </div>
+      <div class="transport">
+        <div class="transport-main"><button id="play" class="primary" aria-label="Play animation"><span id="play-icon" aria-hidden="true">▶</span> <span id="play-label">Play the story</span></button><button id="prev" class="icon-button" aria-label="Previous chapter">←</button><button id="next" class="icon-button" aria-label="Next chapter">→</button><span id="time" class="time">0:00 / 0:00</span></div>
+        <div class="transport-options"><label class="speed-label" for="speed">Speed</label><select id="speed" aria-label="Playback speed"><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select><button id="chapters-toggle" aria-expanded="false" aria-controls="chapter-list">Chapters <span aria-hidden="true">☷</span></button><button id="replay" class="icon-button" aria-label="Replay this chapter">↺</button></div>
+      </div>
+      <div class="scrubber"><label class="sr-only" for="seek">Animation position in seconds</label><input id="seek" type="range" min="0" max="100" step="0.1" value="0"><div id="timeline-segments" aria-hidden="true"></div></div>
+      <div class="phase-tabs" id="phase-tabs" aria-label="Story sections"></div>
+      <nav id="chapter-list" class="chapter-list" aria-label="All chapters" hidden></nav>
+    </section>
+    <div class="below-film"><p><span class="keyboard-hint">SPACE</span> play / pause <span class="keyboard-hint">← →</span> chapters <span class="muted">· Pause and explore any step.</span></p><span class="verified"><span class="status-dot"></span> Real encoder. Verified HELLO round trip.</span></div>
+    <section class="reading" aria-label="Supporting explanation">
+      <details id="technical"><summary><span>Under the hood</span><span class="summary-note">The exact details for this step</span></summary><div id="technical-content"></div></details>
+      <details id="transcript"><summary><span>Read the whole story</span><span class="summary-note">A complete text companion</span></summary><div id="transcript-content"></div></details>
+      <details><summary><span>About this example</span><span class="summary-note">What is real, what is simplified</span></summary><div class="about-content"><p>This follows <a href="../EMBEDDING_WALKTHROUGH.md">EMBEDDING_WALKTHROUGH.md</a>: exactly <strong>HELLO</strong>, keyed mode, <code>balanced</code>, and <code>auto</code>. The four-pixel equations are the walkthrough’s deliberately small teaching example, not a slice of the real 1,024-state trellis.</p><p>The landscape is a generated 512 × 512 grayscale teaching image. Its encrypted bytes, change locations, cost map, balancing scores, and recovered message come from running this repository’s Python/C++ encoder. The demonstration uses the walkthrough’s public counting key, salt, and padding. Real embeddings use a secret key and fresh cryptographic randomness.</p><p>This animation explains how the implementation works. A subtle-looking image and a lower balancing score do not prove that a detector cannot find the message. PNG must be preserved losslessly; resizing and JPEG conversion can destroy the payload. Authentication checks the extracted payload and context, not every image pixel.</p><p>Everything runs locally with no dependencies or network requests. <a href="README.md">Reproduction and controls</a> · <a href="assets/cover.png" download>Teaching cover</a> · <a href="assets/stego.png" download>Verified stego PNG</a></p></div></details>
+    </section>
+  </main>
+  <footer><span>STEGOLAB / FROM BYTES TO PIXELS AND BACK</span><span>A visual companion to the source code.</span></footer>
+  <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+  <noscript><p class="no-script">Enable JavaScript to play the animation, or read <a href="../EMBEDDING_WALKTHROUGH.md">the complete walkthrough</a>.</p></noscript>
+</body>
+</html>
